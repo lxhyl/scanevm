@@ -1,11 +1,11 @@
 #!/usr/bin/env sh
-# Install or update etherscan-cli to the latest release.
-# Usage: curl -fsSL https://raw.githubusercontent.com/lxhyl/etherscan-cli/main/install.sh | sh
+# Install or update scanevm to the latest release.
+# Usage: curl -fsSL https://raw.githubusercontent.com/lxhyl/scanevm/main/install.sh | sh
 
 set -e
 
-REPO="lxhyl/etherscan-cli"
-BIN="etherscan"
+REPO="lxhyl/scanevm"
+BIN="scanevm"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 
 # Detect OS and arch

@@ -2,17 +2,12 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use crate::error::{AppError, Result};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum OutputFormat {
+    #[default]
     Table,
     Json,
-}
-
-impl Default for OutputFormat {
-    fn default() -> Self {
-        OutputFormat::Table
-    }
 }
 
 impl std::str::FromStr for OutputFormat {
@@ -26,7 +21,7 @@ impl std::str::FromStr for OutputFormat {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -35,20 +30,11 @@ pub struct Config {
     pub default_output: OutputFormat,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            api_key: None,
-            default_output: OutputFormat::default(),
-        }
-    }
-}
-
 impl Config {
     pub fn path() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".etherscan-cli")
+            .join(".scanevm")
             .join("config.json")
     }
 

@@ -84,31 +84,25 @@ impl EtherscanClient {
         method: &str,
         json_params: &str,
     ) -> Result<T> {
-        let chain_id = self.chain_id.to_string();
-        let query = [
-            ("chainid", chain_id.as_str()),
-            ("apikey", self.api_key.as_str()),
-            ("module", "proxy"),
-            ("action", method),
+        // Etherscan's proxy module uses query params, not a JSON body;
+        // `action` doubles as the JSON-RPC method name.
+        let mut all_query: Vec<(String, String)> = vec![
+            ("chainid".into(), self.chain_id.to_string()),
+            ("apikey".into(), self.api_key.clone()),
+            ("module".into(), "proxy".into()),
+            ("action".into(), method.to_string()),
         ];
 
-        // Build body: action doubles as the RPC method for Etherscan's proxy
-        // Etherscan proxy uses query params, not JSON body
-        let mut all_query: Vec<(&str, String)> = query
-            .iter()
-            .map(|(k, v)| (*k, v.to_string()))
-            .collect();
-
-        // Parse json_params as key=value pairs if non-empty
+        // json_params is a JSON object like {"tag":"latest","boolean":true};
+        // flatten it into additional query params.
         if !json_params.is_empty() {
-            // json_params is a JSON object like {"tag":"latest","boolean":true}
             if let Ok(map) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json_params) {
                 for (k, v) in &map {
                     let val = match v {
                         serde_json::Value::String(s) => s.clone(),
                         other => other.to_string(),
                     };
-                    all_query.push((Box::leak(k.clone().into_boxed_str()), val));
+                    all_query.push((k.clone(), val));
                 }
             }
         }

@@ -26,8 +26,8 @@ use commands::{
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "etherscan",
-    about = "Etherscan CLI — query blockchain data from the terminal",
+    name = "scanevm",
+    about = "scanevm — fetch verified contract source and query EVM chains from the terminal",
     version
 )]
 struct Cli {

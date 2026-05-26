@@ -1,10 +1,17 @@
 [package]
-name = "etherscan"
+name = "scanevm"
 version = "0.1.0"
 edition = "2021"
+description = "A fast CLI for fetching verified smart contract source code and querying blockchain data across EVM chains."
+license = "MIT"
+repository = "https://github.com/lxhyl/scanevm"
+homepage = "https://github.com/lxhyl/scanevm"
+readme = "README.md"
+keywords = ["ethereum", "etherscan", "evm", "blockchain", "cli"]
+categories = ["command-line-utilities", "cryptography::cryptocurrencies"]
 
 [[bin]]
-name = "etherscan"
+name = "scanevm"
 path = "src/main.rs"
 
 [dependencies]

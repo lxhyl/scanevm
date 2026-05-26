@@ -1,9 +1,9 @@
 use clap::{Args, Subcommand};
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use crate::chains::resolve_chain;
 use crate::client::EtherscanClient;
 use crate::config::{Config, OutputFormat};
-use crate::error::Result;
+use crate::error::{AppError, Result};
 use crate::output::{print_json, print_kv_table};
 use crate::types::ContractSource;
 
@@ -175,8 +175,18 @@ async fn run_source(
     Ok(())
 }
 
-fn save_file(base_dir: &PathBuf, relative_path: &str, content: &str) -> Result<()> {
-    let full_path = base_dir.join(relative_path);
+fn save_file(base_dir: &Path, relative_path: &str, content: &str) -> Result<()> {
+    // The relative path comes from the API response, so reject anything that
+    // would escape the target directory (absolute paths, `..`, drive prefixes).
+    let candidate = Path::new(relative_path);
+    let safe = candidate.components().all(|c| matches!(c, Component::Normal(_)));
+    if !safe {
+        return Err(AppError::Config(format!(
+            "refusing to write unsafe source path: '{relative_path}'"
+        )));
+    }
+
+    let full_path = base_dir.join(candidate);
     if let Some(parent) = full_path.parent() {
         std::fs::create_dir_all(parent)?;
     }

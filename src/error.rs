@@ -4,10 +4,10 @@ pub type Result<T> = std::result::Result<T, AppError>;
 
 #[derive(Debug, Error)]
 pub enum AppError {
-    #[error("No API key configured. Run: etherscan config set-key <KEY>")]
+    #[error("No API key configured. Run: scanevm config set-key <KEY>")]
     NoApiKey,
 
-    #[error("Unknown chain: '{0}'. Run: etherscan chains")]
+    #[error("Unknown chain: '{0}'. Run: scanevm chains")]
     UnknownChain(String),
 
     #[error("API error: {0}")]

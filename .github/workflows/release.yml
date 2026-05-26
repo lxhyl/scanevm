@@ -17,19 +17,19 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            artifact: etherscan
+            artifact: scanevm
           - os: ubuntu-latest
             target: aarch64-unknown-linux-musl
-            artifact: etherscan
+            artifact: scanevm
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact: etherscan
+            artifact: scanevm
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact: etherscan
+            artifact: scanevm
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: etherscan.exe
+            artifact: scanevm.exe
 
     steps:
       - uses: actions/checkout@v4
@@ -55,8 +55,8 @@ jobs:
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
-          BIN=target/${{ matrix.target }}/release/etherscan
-          ARCHIVE=etherscan-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
+          BIN=target/${{ matrix.target }}/release/scanevm
+          ARCHIVE=scanevm-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
           tar -czf "$ARCHIVE" -C "$(dirname $BIN)" "$(basename $BIN)"
           echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
 
@@ -64,15 +64,15 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $BIN = "target\${{ matrix.target }}\release\etherscan.exe"
-          $ARCHIVE = "etherscan-${{ github.ref_name }}-${{ matrix.target }}.zip"
+          $BIN = "target\${{ matrix.target }}\release\scanevm.exe"
+          $ARCHIVE = "scanevm-${{ github.ref_name }}-${{ matrix.target }}.zip"
           Compress-Archive -Path $BIN -DestinationPath $ARCHIVE
           echo "ARCHIVE=$ARCHIVE" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: etherscan-${{ matrix.target }}
+          name: scanevm-${{ matrix.target }}
           path: ${{ env.ARCHIVE }}
 
   release:
@@ -103,15 +103,15 @@ jobs:
 
             **macOS/Linux (auto-update):**
             ```sh
-            curl -fsSL https://raw.githubusercontent.com/lxhyl/etherscan-cli/main/install.sh | sh
+            curl -fsSL https://raw.githubusercontent.com/lxhyl/scanevm/main/install.sh | sh
             ```
 
             **cargo:**
             ```sh
-            cargo install etherscan-cli
+            cargo install scanevm
             ```
 
-            See [README](https://github.com/lxhyl/etherscan-cli#readme) for full docs.
+            See [README](https://github.com/lxhyl/scanevm#readme) for full docs.
           files: dist/*
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
