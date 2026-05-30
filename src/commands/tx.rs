@@ -9,6 +9,7 @@ use serde_json::Value;
 #[derive(Debug, Args)]
 pub struct TxArgs {
     /// Transaction hash
+    #[arg(value_parser = crate::commands::parse_tx_hash)]
     pub hash: String,
 
     /// Chain name or ID (e.g. ethereum, polygon, base, 137)

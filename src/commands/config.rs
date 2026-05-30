@@ -1,6 +1,6 @@
 use crate::config::{Config, OutputFormat};
 use crate::error::Result;
-use crate::output::{print_kv_table, success};
+use crate::output::{print_json, print_kv_table, success};
 use clap::{Args, Subcommand};
 use std::str::FromStr;
 
@@ -17,7 +17,11 @@ pub enum ConfigSubcommand {
     /// Set the default output format (table|json)
     SetOutput { format: String },
     /// Show current configuration
-    Show,
+    Show {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 pub async fn run(args: &ConfigArgs, cfg: &Config) -> Result<()> {
@@ -35,7 +39,7 @@ pub async fn run(args: &ConfigArgs, cfg: &Config) -> Result<()> {
             c.save()?;
             println!("{}", success(&format!("Default output set to '{format}'.")));
         }
-        ConfigSubcommand::Show => {
+        ConfigSubcommand::Show { json } => {
             let key_display = cfg
                 .api_key
                 .as_deref()
@@ -49,12 +53,24 @@ pub async fn run(args: &ConfigArgs, cfg: &Config) -> Result<()> {
                 .unwrap_or_else(|| "(not set)".to_string());
 
             let output_str = format!("{:?}", cfg.default_output).to_lowercase();
+            let path = Config::path().display().to_string();
 
-            print_kv_table(&[
-                ("API Key", key_display),
-                ("Default Output", output_str),
-                ("Config Path", Config::path().display().to_string()),
-            ]);
+            let use_json = *json || cfg.default_output == OutputFormat::Json;
+            if use_json {
+                // Never emit the full key — only whether it's set and a masked preview.
+                print_json(&serde_json::json!({
+                    "api_key_set": cfg.api_key.is_some(),
+                    "api_key_preview": key_display,
+                    "default_output": output_str,
+                    "config_path": path,
+                }));
+            } else {
+                print_kv_table(&[
+                    ("API Key", key_display),
+                    ("Default Output", output_str),
+                    ("Config Path", path),
+                ]);
+            }
         }
     }
     Ok(())

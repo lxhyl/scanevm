@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1]
+
+### Added
+- `contract bytecode --json` and `config show --json` (the latter never prints the
+  full key — only a masked preview and an `api_key_set` flag), so every query
+  command now has a `--json` form.
+- Exit codes are documented at the bottom of `--help` and in the README.
+
+### Changed
+- `--sort` is now a validated `asc`/`desc` choice (shown in `--help`) instead of a
+  free-form string.
+- Addresses and transaction hashes are validated locally before any request, so a
+  typo fails fast with a clear message instead of an opaque API error.
+- `--limit` is bounded to 1–10000.
+- Clarified `--help` text for `contract facets` (also handles non-EIP-2535 routers
+  and can download sources) and `contract source --json` (metadata only).
+
 ## [0.2.0]
 
 ### Added

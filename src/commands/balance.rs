@@ -8,6 +8,7 @@ use clap::Args;
 #[derive(Debug, Args)]
 pub struct BalanceArgs {
     /// Ethereum address
+    #[arg(value_parser = crate::commands::parse_address)]
     pub address: String,
 
     /// Chain name or ID (e.g. ethereum, polygon, base, 137)

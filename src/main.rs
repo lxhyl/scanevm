@@ -24,12 +24,28 @@ use commands::{
 #[command(
     name = "scanevm",
     about = "scanevm — fetch verified contract source and query EVM chains from the terminal",
-    version
+    version,
+    after_help = EXIT_CODES_HELP
 )]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
 }
+
+/// Shown at the bottom of `--help`. Most commands accept `--json` for
+/// machine-readable output; env vars: ETHERSCAN_API_KEY, SCANEVM_NO_CACHE.
+const EXIT_CODES_HELP: &str = "\
+Exit codes:
+  0  success
+  2  usage / config error (missing key, unknown chain, bad input)
+  3  network error
+  4  rate limited (retryable)
+  5  invalid API key
+  6  API error
+  7  not found (no such block / tx)
+  8  contract source not verified
+
+Most commands accept --json. Env: ETHERSCAN_API_KEY, SCANEVM_NO_CACHE=1.";
 
 #[derive(Debug, Subcommand)]
 enum Commands {

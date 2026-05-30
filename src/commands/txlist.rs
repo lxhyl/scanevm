@@ -12,23 +12,24 @@ use tabled::Tabled;
 #[derive(Debug, Args)]
 pub struct TxlistArgs {
     /// Ethereum address
+    #[arg(value_parser = crate::commands::parse_address)]
     pub address: String,
 
     /// Chain name or ID (e.g. ethereum, polygon, base, 137)
     #[arg(long, short = 'c')]
     pub chain: String,
 
-    /// Max number of transactions
-    #[arg(long, default_value = "20")]
+    /// Max number of transactions (1-10000)
+    #[arg(long, default_value = "20", value_parser = clap::value_parser!(u32).range(1..=10000))]
     pub limit: u32,
 
     /// Start block
     #[arg(long, default_value = "0")]
     pub start_block: u64,
 
-    /// Sort order: asc or desc
+    /// Sort order
     #[arg(long, default_value = "desc")]
-    pub sort: String,
+    pub sort: crate::commands::SortOrder,
 
     /// Output as JSON
     #[arg(long)]
@@ -71,7 +72,7 @@ pub async fn run(args: &TxlistArgs, cfg: &Config) -> Result<()> {
             ("endblock", "99999999"),
             ("page", "1"),
             ("offset", &limit),
-            ("sort", &args.sort),
+            ("sort", args.sort.as_str()),
         ])
         .await?;
 

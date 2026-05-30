@@ -12,6 +12,7 @@ use tabled::Tabled;
 #[derive(Debug, Args)]
 pub struct TransfersArgs {
     /// Ethereum address
+    #[arg(value_parser = crate::commands::parse_address)]
     pub address: String,
 
     /// Chain name or ID (e.g. ethereum, polygon, base, 137)
@@ -22,13 +23,13 @@ pub struct TransfersArgs {
     #[arg(long)]
     pub nft: bool,
 
-    /// Max number of transfers
-    #[arg(long, default_value = "20")]
+    /// Max number of transfers (1-10000)
+    #[arg(long, default_value = "20", value_parser = clap::value_parser!(u32).range(1..=10000))]
     pub limit: u32,
 
-    /// Sort order: asc or desc
+    /// Sort order
     #[arg(long, default_value = "desc")]
-    pub sort: String,
+    pub sort: crate::commands::SortOrder,
 
     /// Output as JSON
     #[arg(long)]
@@ -84,7 +85,7 @@ pub async fn run(args: &TransfersArgs, cfg: &Config) -> Result<()> {
                 ("address", &args.address),
                 ("page", "1"),
                 ("offset", &limit),
-                ("sort", &args.sort),
+                ("sort", args.sort.as_str()),
             ])
             .await?;
 
@@ -114,7 +115,7 @@ pub async fn run(args: &TransfersArgs, cfg: &Config) -> Result<()> {
                 ("address", &args.address),
                 ("page", "1"),
                 ("offset", &limit),
-                ("sort", &args.sort),
+                ("sort", args.sort.as_str()),
             ])
             .await?;
 

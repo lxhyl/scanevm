@@ -110,6 +110,27 @@ scanevm chains                             List supported chains
 
 Add `--json` to any command for machine-readable output.
 
+## Scripting & agents
+
+Add `--json` for machine-readable output (kept clean on stdout — progress notes
+go to stderr). Errors exit with a distinct code per failure class, so scripts and
+agents can branch — e.g. retry on `4` but give up on `2`:
+
+| Code | Meaning |
+|------|---------|
+| 0 | success |
+| 2 | usage / config error (missing key, unknown chain, bad input) |
+| 3 | network error |
+| 4 | rate limited (retryable) |
+| 5 | invalid API key |
+| 6 | API error |
+| 7 | not found (no such block / tx) |
+| 8 | contract source not verified |
+
+Environment variables: `ETHERSCAN_API_KEY` (overrides the config file),
+`SCANEVM_NO_CACHE=1` (disable the local response cache). Config lives at
+`~/.scanevm/config.json` (written `0600`); cache at `~/.scanevm/cache/`.
+
 ## Installation
 
 ### cargo

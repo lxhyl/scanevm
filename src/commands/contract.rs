@@ -19,6 +19,7 @@ pub enum ContractSubcommand {
     /// Fetch and display verified contract source code
     Source {
         /// Contract address
+        #[arg(value_parser = crate::commands::parse_address)]
         address: String,
         /// Chain name or ID (e.g. ethereum, polygon, base, 137)
         #[arg(long, short = 'c')]
@@ -35,13 +36,14 @@ pub enum ContractSubcommand {
         /// If the address is a proxy, fetch the implementation's source instead
         #[arg(long = "impl")]
         follow_impl: bool,
-        /// Output as JSON
+        /// Output metadata as JSON (ignored with --print/--save/--flatten)
         #[arg(long)]
         json: bool,
     },
     /// Fetch contract ABI
     Abi {
         /// Contract address
+        #[arg(value_parser = crate::commands::parse_address)]
         address: String,
         /// Chain name or ID (e.g. ethereum, polygon, base, 137)
         #[arg(long, short = 'c')]
@@ -56,14 +58,19 @@ pub enum ContractSubcommand {
     /// Fetch contract bytecode
     Bytecode {
         /// Contract address
+        #[arg(value_parser = crate::commands::parse_address)]
         address: String,
         /// Chain name or ID (e.g. ethereum, polygon, base, 137)
         #[arg(long, short = 'c')]
         chain: String,
+        /// Output as JSON ({"address","bytecode"})
+        #[arg(long)]
+        json: bool,
     },
     /// Resolve the implementation address behind a proxy
     Impl {
         /// Proxy contract address
+        #[arg(value_parser = crate::commands::parse_address)]
         address: String,
         /// Chain name or ID (e.g. ethereum, polygon, base, 137)
         #[arg(long, short = 'c')]
@@ -72,9 +79,10 @@ pub enum ContractSubcommand {
         #[arg(long)]
         json: bool,
     },
-    /// List the facets of an EIP-2535 diamond
+    /// List or download a diamond / multi-facet proxy's facets
     Facets {
         /// Diamond contract address
+        #[arg(value_parser = crate::commands::parse_address)]
         address: String,
         /// Chain name or ID (e.g. ethereum, polygon, base, 137)
         #[arg(long, short = 'c')]
@@ -123,7 +131,11 @@ pub async fn run(args: &ContractArgs, cfg: &Config) -> Result<()> {
             follow_impl,
             json,
         } => run_abi(address, chain, *follow_impl, *json, cfg).await,
-        ContractSubcommand::Bytecode { address, chain } => run_bytecode(address, chain, cfg).await,
+        ContractSubcommand::Bytecode {
+            address,
+            chain,
+            json,
+        } => run_bytecode(address, chain, *json, cfg).await,
         ContractSubcommand::Impl {
             address,
             chain,
@@ -468,7 +480,12 @@ fn looks_like_proxy_abi(abi: &str) -> bool {
         || abi.contains("\"implementation\"") && abi.contains("\"admin\"")
 }
 
-async fn run_bytecode(address: &str, chain_name: &str, cfg: &Config) -> Result<()> {
+async fn run_bytecode(
+    address: &str,
+    chain_name: &str,
+    use_json_flag: bool,
+    cfg: &Config,
+) -> Result<()> {
     let api_key = cfg.require_api_key()?;
     let chain = resolve_chain(chain_name)?;
     let client = EtherscanClient::new(api_key, chain.chain_id);
@@ -482,7 +499,12 @@ async fn run_bytecode(address: &str, chain_name: &str, cfg: &Config) -> Result<(
         )
         .await?;
 
-    println!("{bytecode}");
+    let use_json = use_json_flag || cfg.default_output == OutputFormat::Json;
+    if use_json {
+        print_json(&serde_json::json!({ "address": address, "bytecode": bytecode }));
+    } else {
+        println!("{bytecode}");
+    }
     Ok(())
 }
 
