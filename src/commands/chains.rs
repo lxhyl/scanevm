@@ -1,9 +1,9 @@
-use clap::Args;
-use tabled::Tabled;
 use crate::chains::CHAINS;
 use crate::config::{Config, OutputFormat};
 use crate::error::Result;
 use crate::output::print_table;
+use clap::Args;
+use tabled::Tabled;
 
 #[derive(Debug, Args)]
 pub struct ChainsArgs {

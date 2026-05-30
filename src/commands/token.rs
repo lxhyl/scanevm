@@ -1,10 +1,10 @@
-use clap::Args;
 use crate::chains::resolve_chain;
 use crate::client::EtherscanClient;
 use crate::config::{Config, OutputFormat};
 use crate::error::Result;
 use crate::output::{format_token_amount, print_json, print_kv_table};
 use crate::types::TokenInfo;
+use clap::Args;
 
 #[derive(Debug, Args)]
 pub struct TokenArgs {
@@ -26,22 +26,28 @@ pub async fn run(args: &TokenArgs, cfg: &Config) -> Result<()> {
     let chain = resolve_chain(chain_name)?;
     let client = EtherscanClient::new(api_key, chain.chain_id);
 
-    // Fetch token info
+    // Fetch token info (metadata changes rarely — cache for an hour).
     let infos: Vec<TokenInfo> = client
-        .call(&[
-            ("module", "token"),
-            ("action", "tokeninfo"),
-            ("contractaddress", &args.address),
-        ])
+        .call_cached(
+            Some(std::time::Duration::from_secs(3600)),
+            &[
+                ("module", "token"),
+                ("action", "tokeninfo"),
+                ("contractaddress", &args.address),
+            ],
+        )
         .await?;
 
-    // Fetch circulating supply
+    // Fetch circulating supply (changes over time — short TTL).
     let supply: String = client
-        .call(&[
-            ("module", "stats"),
-            ("action", "tokensupply"),
-            ("contractaddress", &args.address),
-        ])
+        .call_cached(
+            Some(std::time::Duration::from_secs(60)),
+            &[
+                ("module", "stats"),
+                ("action", "tokensupply"),
+                ("contractaddress", &args.address),
+            ],
+        )
         .await
         .unwrap_or_else(|_| "0".to_string());
 

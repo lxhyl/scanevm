@@ -9,24 +9,31 @@ scanevm contract source 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 -c ethereum -
 
 ## Contract Commands
 
-This is the primary use case. All three subcommands work on any supported chain.
+This is the primary use case. Every subcommand works on any supported chain.
 
 ### `contract source` — download verified source code
 
 ```sh
-# Show contract metadata (name, compiler, license, proxy status)
+# Show contract metadata (name, compiler, EVM version, license, proxy status)
 scanevm contract source <ADDRESS> -c <CHAIN>
 
 # Print source to stdout
 scanevm contract source <ADDRESS> -c <CHAIN> --print
 
-# Save all source files to a directory
+# Save all source files to a directory (original layout preserved)
 scanevm contract source <ADDRESS> -c <CHAIN> --save ./output
+
+# Flatten a multi-file contract into a single stream / file
+scanevm contract source <ADDRESS> -c <CHAIN> --flatten
+scanevm contract source <ADDRESS> -c <CHAIN> --flatten --save ./output
+
+# Proxy? Fetch the IMPLEMENTATION's source in one step
+scanevm contract source <PROXY> -c <CHAIN> --impl --save ./impl
 ```
 
 Multi-file contracts (Hardhat / standard JSON input format) are automatically unpacked — the original directory structure is preserved under `./output`.
 
-Proxy contracts show the implementation address:
+The metadata view shows proxy status and the implementation address:
 
 ```
 Contract     TransparentUpgradeableProxy
@@ -41,7 +48,46 @@ Chain        ethereum
 
 ```sh
 scanevm contract abi <ADDRESS> -c <CHAIN>
+
+# Compact JSON for piping to jq
+scanevm contract abi <ADDRESS> -c <CHAIN> --json
+
+# For a proxy, fetch the implementation's ABI (the one you can actually call)
+scanevm contract abi <PROXY> -c <CHAIN> --impl
 ```
+
+### `contract impl` — resolve a proxy's implementation address
+
+Works even when Etherscan hasn't flagged the contract as a proxy — it reads the
+EIP-1967, EIP-1822 (UUPS), beacon, and legacy storage slots directly. If the
+address is a multi-facet diamond, it tells you to use `contract facets` instead
+of returning a single misleading address.
+
+```sh
+scanevm contract impl <PROXY> -c <CHAIN>
+```
+
+### `contract facets` — list the facets of a diamond / multi-facet proxy
+
+Resolves the full facet set four ways: DiamondLoupe `facets()` / `facetAddresses()`,
+standard EIP-2535 `DiamondCut` event replay, and `SelectorToFacetSet` event replay
+for Pendle-style custom selector routers (which expose neither the loupe nor
+`DiamondCut`).
+
+```sh
+scanevm contract facets <DIAMOND> -c <CHAIN>
+
+# Download every facet's source (one subdir per facet) — the "get all the
+# implementation code" command for diamonds, since they have no single impl
+scanevm contract facets <DIAMOND> -c <CHAIN> --save ./facets
+scanevm contract facets <DIAMOND> -c <CHAIN> --save ./facets --flatten
+
+# Merge every facet's ABI into one combined ABI (the diamond's full interface)
+scanevm contract facets <DIAMOND> -c <CHAIN> --abi
+```
+
+For a normal (single-implementation) proxy, use `contract source <ADDR> --impl`
+instead. If you run `--impl` on a diamond it tells you to use `contract facets`.
 
 ### `contract bytecode` — fetch deployed bytecode
 

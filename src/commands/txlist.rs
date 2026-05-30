@@ -1,11 +1,13 @@
-use clap::Args;
-use tabled::Tabled;
 use crate::chains::resolve_chain;
 use crate::client::EtherscanClient;
 use crate::config::{Config, OutputFormat};
 use crate::error::Result;
-use crate::output::{format_eth, format_timestamp, print_json, print_table, truncate_hash, truncate_addr};
+use crate::output::{
+    format_eth, format_timestamp, print_json, print_table, truncate_addr, truncate_hash,
+};
 use crate::types::Transaction;
+use clap::Args;
+use tabled::Tabled;
 
 #[derive(Debug, Args)]
 pub struct TxlistArgs {
@@ -88,7 +90,11 @@ pub async fn run(args: &TxlistArgs, cfg: &Config) -> Result<()> {
             from: truncate_addr(&tx.from),
             to: truncate_addr(&tx.to),
             value: format_eth(&tx.value, chain.currency_symbol),
-            status: if tx.is_error == "0" { "✓".to_string() } else { "✗".to_string() },
+            status: if tx.is_error == "0" {
+                "✓".to_string()
+            } else {
+                "✗".to_string()
+            },
         })
         .collect();
 

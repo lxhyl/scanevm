@@ -1,4 +1,4 @@
-use crate::error::{AppError, Result};
+use crate::error::{Result, ScanevmError};
 
 pub struct ChainInfo {
     pub name: &'static str,
@@ -245,7 +245,7 @@ pub fn resolve_chain(input: &str) -> Result<&'static ChainInfo> {
             }
         }
     }
-    Err(AppError::UnknownChain(input.to_string()))
+    Err(ScanevmError::UnknownChain(input.to_string()))
 }
 
 #[cfg(test)]

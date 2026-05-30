@@ -1,9 +1,10 @@
-use clap::Args;
 use crate::chains::resolve_chain;
 use crate::client::EtherscanClient;
 use crate::config::{Config, OutputFormat};
-use crate::error::Result;
+use crate::error::{Result, ScanevmError};
 use crate::output::{format_eth, format_gwei, format_timestamp, print_json, print_kv_table};
+use clap::Args;
+use serde_json::Value;
 
 #[derive(Debug, Args)]
 pub struct TxArgs {
@@ -25,22 +26,62 @@ pub async fn run(args: &TxArgs, cfg: &Config) -> Result<()> {
     let chain = resolve_chain(chain_name)?;
     let client = EtherscanClient::new(api_key, chain.chain_id);
 
-    // Get transaction details via proxy
-    let tx: serde_json::Value = client
-        .proxy(
-            "eth_getTransactionByHash",
-            &format!(r#"{{"txhash":"{}"}}"#, args.hash),
-        )
-        .await?;
+    let cache_parts = ["tx", args.hash.as_str()];
+    let txhash_params = format!(r#"{{"txhash":"{}"}}"#, args.hash);
 
-    // Also try to get receipt for status
-    let receipt: serde_json::Value = client
-        .proxy(
-            "eth_getTransactionReceipt",
-            &format!(r#"{{"txhash":"{}"}}"#, args.hash),
-        )
-        .await
-        .unwrap_or(serde_json::Value::Null);
+    // Resolve (transaction, receipt, block timestamp) from cache or network.
+    // A mined transaction is immutable, so it is cached permanently.
+    let (tx, receipt, block_ts): (Value, Value, Option<u64>) = match client
+        .cache_get(&cache_parts)
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+    {
+        Some(cached) => (
+            cached.get("transaction").cloned().unwrap_or(Value::Null),
+            cached.get("receipt").cloned().unwrap_or(Value::Null),
+            cached.get("timestamp").and_then(|t| t.as_u64()),
+        ),
+        None => {
+            // tx and receipt are independent — fetch them concurrently.
+            let (tx_res, receipt_res) = tokio::join!(
+                client.proxy::<Value>("eth_getTransactionByHash", &txhash_params),
+                client.proxy::<Value>("eth_getTransactionReceipt", &txhash_params),
+            );
+            let tx = tx_res?;
+            if tx.is_null() {
+                return Err(ScanevmError::NotFound(format!("transaction {}", args.hash)));
+            }
+            let receipt = receipt_res.unwrap_or(Value::Null);
+
+            // Fetch the block timestamp only when the tx is mined.
+            let block_ts = match tx["blockNumber"].as_str() {
+                Some(block_hex) => {
+                    let block_data: Value = client
+                        .proxy(
+                            "eth_getBlockByNumber",
+                            &format!(r#"{{"tag":"{block_hex}","boolean":false}}"#),
+                        )
+                        .await
+                        .unwrap_or(Value::Null);
+                    block_data["timestamp"]
+                        .as_str()
+                        .and_then(|h| u64::from_str_radix(h.trim_start_matches("0x"), 16).ok())
+                }
+                None => None,
+            };
+
+            if !tx["blockNumber"].is_null() {
+                let payload = serde_json::json!({
+                    "transaction": tx,
+                    "receipt": receipt,
+                    "timestamp": block_ts,
+                });
+                if let Ok(s) = serde_json::to_string(&payload) {
+                    client.cache_put(&cache_parts, &s, None);
+                }
+            }
+            (tx, receipt, block_ts)
+        }
+    };
 
     let use_json = args.json || cfg.default_output == OutputFormat::Json;
     if use_json {
@@ -56,7 +97,11 @@ pub async fn run(args: &TxArgs, cfg: &Config) -> Result<()> {
     let hash = tx["hash"].as_str().unwrap_or(&args.hash);
     let block = tx["blockNumber"]
         .as_str()
-        .map(|s| i64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(0).to_string())
+        .map(|s| {
+            i64::from_str_radix(s.trim_start_matches("0x"), 16)
+                .unwrap_or(0)
+                .to_string()
+        })
         .unwrap_or_else(|| "pending".to_string());
     let from = tx["from"].as_str().unwrap_or("-");
     let to = tx["to"].as_str().unwrap_or("(contract creation)");
@@ -69,35 +114,28 @@ pub async fn run(args: &TxArgs, cfg: &Config) -> Result<()> {
         .unwrap_or(0)
         .to_string();
     let gas_limit_hex = tx["gas"].as_str().unwrap_or("0x0");
-    let gas_limit = u64::from_str_radix(gas_limit_hex.trim_start_matches("0x"), 16)
-        .unwrap_or(0);
+    let gas_limit = u64::from_str_radix(gas_limit_hex.trim_start_matches("0x"), 16).unwrap_or(0);
     let nonce_hex = tx["nonce"].as_str().unwrap_or("0x0");
     let nonce = u64::from_str_radix(nonce_hex.trim_start_matches("0x"), 16).unwrap_or(0);
 
     // Receipt fields
     let status = receipt["status"]
         .as_str()
-        .map(|s| if s == "0x1" { "Success ✓" } else { "Failed ✗" })
+        .map(|s| {
+            if s == "0x1" {
+                "Success ✓"
+            } else {
+                "Failed ✗"
+            }
+        })
         .unwrap_or("Unknown");
     let gas_used_hex = receipt["gasUsed"].as_str().unwrap_or("0x0");
     let gas_used = u64::from_str_radix(gas_used_hex.trim_start_matches("0x"), 16).unwrap_or(0);
 
-    // Get timestamp from block if available
-    let timestamp_row = if let Ok(block_num) = block.parse::<u64>() {
-        let block_hex = format!("0x{:x}", block_num);
-        let block_data: serde_json::Value = client
-            .proxy(
-                "eth_getBlockByNumber",
-                &format!(r#"{{"tag":"{}","boolean":false}}"#, block_hex),
-            )
-            .await
-            .unwrap_or(serde_json::Value::Null);
-        let ts_hex = block_data["timestamp"].as_str().unwrap_or("0x0");
-        let ts = u64::from_str_radix(ts_hex.trim_start_matches("0x"), 16).unwrap_or(0);
-        format_timestamp(&ts.to_string())
-    } else {
-        "pending".to_string()
-    };
+    // Timestamp was resolved alongside the tx (from cache or the block fetch).
+    let timestamp_row = block_ts
+        .map(|ts| format_timestamp(&ts.to_string()))
+        .unwrap_or_else(|| "pending".to_string());
 
     let input_data = tx["input"].as_str().unwrap_or("0x");
     let input_display = if input_data == "0x" || input_data.is_empty() {

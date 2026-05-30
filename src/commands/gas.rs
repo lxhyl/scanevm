@@ -1,10 +1,10 @@
-use clap::Args;
 use crate::chains::resolve_chain;
 use crate::client::EtherscanClient;
 use crate::config::{Config, OutputFormat};
 use crate::error::Result;
 use crate::output::{print_json, print_kv_table};
 use crate::types::GasOracle;
+use clap::Args;
 
 #[derive(Debug, Args)]
 pub struct GasArgs {
@@ -24,10 +24,7 @@ pub async fn run(args: &GasArgs, cfg: &Config) -> Result<()> {
     let client = EtherscanClient::new(api_key, chain.chain_id);
 
     let gas: GasOracle = client
-        .call(&[
-            ("module", "gastracker"),
-            ("action", "gasoracle"),
-        ])
+        .call(&[("module", "gastracker"), ("action", "gasoracle")])
         .await?;
 
     let use_json = args.json || cfg.default_output == OutputFormat::Json;

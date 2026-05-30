@@ -1,9 +1,9 @@
-use clap::Args;
 use crate::chains::resolve_chain;
 use crate::client::EtherscanClient;
 use crate::config::{Config, OutputFormat};
-use crate::error::Result;
+use crate::error::{Result, ScanevmError};
 use crate::output::{format_timestamp, print_json, print_kv_table};
+use clap::Args;
 
 #[derive(Debug, Args)]
 pub struct BlockArgs {
@@ -25,19 +25,27 @@ pub async fn run(args: &BlockArgs, cfg: &Config) -> Result<()> {
     let chain = resolve_chain(chain_name)?;
     let client = EtherscanClient::new(api_key, chain.chain_id);
 
-    let tag = if args.number.eq_ignore_ascii_case("latest") {
+    let is_latest = args.number.eq_ignore_ascii_case("latest");
+    let tag = if is_latest {
         "latest".to_string()
     } else {
-        let n: u64 = args.number.parse().unwrap_or(0);
-        format!("0x{:x}", n)
+        format!("0x{:x}", parse_block_number(&args.number)?)
     };
 
-    let block: serde_json::Value = client
-        .proxy(
-            "eth_getBlockByNumber",
-            &format!(r#"{{"tag":"{}","boolean":false}}"#, tag),
-        )
-        .await?;
+    let params = format!(r#"{{"tag":"{tag}","boolean":false}}"#);
+    // A specific block is immutable once mined, so cache it permanently;
+    // "latest" must always hit the network.
+    let block: serde_json::Value = if is_latest {
+        client.proxy("eth_getBlockByNumber", &params).await?
+    } else {
+        client
+            .proxy_cached(None, "eth_getBlockByNumber", &params)
+            .await?
+    };
+
+    if block.is_null() {
+        return Err(ScanevmError::NotFound(format!("block {}", args.number)));
+    }
 
     let use_json = args.json || cfg.default_output == OutputFormat::Json;
     if use_json {
@@ -83,4 +91,41 @@ pub async fn run(args: &BlockArgs, cfg: &Config) -> Result<()> {
         ("Chain", chain.name.to_string()),
     ]);
     Ok(())
+}
+
+/// Parse a block number given as decimal (`19000000`) or hex (`0x1212d20`).
+/// Rejects anything else instead of silently querying block 0.
+fn parse_block_number(s: &str) -> Result<u64> {
+    let trimmed = s.trim();
+    let parsed = match trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    {
+        Some(hex) => u64::from_str_radix(hex, 16),
+        None => trimmed.parse::<u64>(),
+    };
+    parsed.map_err(|_| {
+        ScanevmError::BadInput(format!(
+            "invalid block number: '{s}' (expected a number or 'latest')"
+        ))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_decimal_and_hex() {
+        assert_eq!(parse_block_number("19000000").unwrap(), 19_000_000);
+        assert_eq!(parse_block_number("0x1212d20").unwrap(), 0x1212d20);
+        assert_eq!(parse_block_number("  42 ").unwrap(), 42);
+    }
+
+    #[test]
+    fn rejects_garbage() {
+        assert!(parse_block_number("abc").is_err());
+        assert!(parse_block_number("-1").is_err());
+        assert!(parse_block_number("").is_err());
+    }
 }

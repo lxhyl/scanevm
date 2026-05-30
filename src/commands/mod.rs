@@ -1,10 +1,10 @@
 pub mod balance;
-pub mod txlist;
-pub mod transfers;
-pub mod contract;
-pub mod gas;
-pub mod token;
-pub mod tx;
 pub mod block;
 pub mod chains;
 pub mod config;
+pub mod contract;
+pub mod gas;
+pub mod token;
+pub mod transfers;
+pub mod tx;
+pub mod txlist;

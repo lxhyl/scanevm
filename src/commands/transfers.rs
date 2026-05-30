@@ -1,11 +1,13 @@
-use clap::Args;
-use tabled::Tabled;
 use crate::chains::resolve_chain;
 use crate::client::EtherscanClient;
 use crate::config::{Config, OutputFormat};
 use crate::error::Result;
-use crate::output::{format_token_amount, format_timestamp, print_json, print_table, truncate_hash, truncate_addr};
+use crate::output::{
+    format_timestamp, format_token_amount, print_json, print_table, truncate_addr, truncate_hash,
+};
 use crate::types::{NftTransfer, TokenTransfer};
+use clap::Args;
+use tabled::Tabled;
 
 #[derive(Debug, Args)]
 pub struct TransfersArgs {

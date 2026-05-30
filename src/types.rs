@@ -25,11 +25,23 @@ pub struct Transaction {
     pub gas_used: String,
     #[serde(rename = "isError")]
     pub is_error: String,
-    #[serde(rename = "functionName", deserialize_with = "empty_string_as_none", default)]
+    #[serde(
+        rename = "functionName",
+        deserialize_with = "empty_string_as_none",
+        default
+    )]
     pub function_name: Option<String>,
-    #[serde(rename = "txreceipt_status", deserialize_with = "empty_string_as_none", default)]
+    #[serde(
+        rename = "txreceipt_status",
+        deserialize_with = "empty_string_as_none",
+        default
+    )]
     pub receipt_status: Option<String>,
-    #[serde(rename = "contractAddress", deserialize_with = "empty_string_as_none", default)]
+    #[serde(
+        rename = "contractAddress",
+        deserialize_with = "empty_string_as_none",
+        default
+    )]
     pub contract_address: Option<String>,
 }
 
@@ -72,7 +84,7 @@ pub struct NftTransfer {
     pub contract_address: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct ContractSource {
     #[serde(rename = "SourceCode")]
     pub source_code: String,
@@ -82,6 +94,12 @@ pub struct ContractSource {
     pub contract_name: String,
     #[serde(rename = "CompilerVersion")]
     pub compiler_version: String,
+    #[serde(rename = "EVMVersion", default)]
+    pub evm_version: String,
+    #[serde(rename = "ConstructorArguments", default)]
+    pub constructor_arguments: String,
+    #[serde(rename = "SwarmSource", default)]
+    pub swarm_source: String,
     #[serde(rename = "OptimizationUsed")]
     pub optimization_used: String,
     #[serde(rename = "Runs")]
@@ -90,7 +108,11 @@ pub struct ContractSource {
     pub license_type: String,
     #[serde(rename = "Proxy")]
     pub proxy: String,
-    #[serde(rename = "Implementation", deserialize_with = "empty_string_as_none", default)]
+    #[serde(
+        rename = "Implementation",
+        deserialize_with = "empty_string_as_none",
+        default
+    )]
     pub implementation: Option<String>,
 }
 

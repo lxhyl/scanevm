@@ -1,7 +1,7 @@
-use clap::{Args, Subcommand};
 use crate::config::{Config, OutputFormat};
 use crate::error::Result;
 use crate::output::{print_kv_table, success};
+use clap::{Args, Subcommand};
 use std::str::FromStr;
 
 #[derive(Debug, Args)]
@@ -13,13 +13,9 @@ pub struct ConfigArgs {
 #[derive(Debug, Subcommand)]
 pub enum ConfigSubcommand {
     /// Set the Etherscan API key
-    SetKey {
-        key: String,
-    },
+    SetKey { key: String },
     /// Set the default output format (table|json)
-    SetOutput {
-        format: String,
-    },
+    SetOutput { format: String },
     /// Show current configuration
     Show,
 }

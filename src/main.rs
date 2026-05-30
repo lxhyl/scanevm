@@ -1,10 +1,13 @@
-mod error;
-mod config;
+mod cache;
 mod chains;
 mod client;
-mod types;
-mod output;
 mod commands;
+mod config;
+mod diamond;
+mod error;
+mod output;
+mod proxy;
+mod types;
 
 use clap::{Parser, Subcommand};
 use colored::Colorize;
@@ -12,16 +15,9 @@ use config::Config;
 use error::Result;
 
 use commands::{
-    balance::BalanceArgs,
+    balance::BalanceArgs, block::BlockArgs, chains::ChainsArgs, config::ConfigArgs,
+    contract::ContractArgs, gas::GasArgs, token::TokenArgs, transfers::TransfersArgs, tx::TxArgs,
     txlist::TxlistArgs,
-    transfers::TransfersArgs,
-    contract::ContractArgs,
-    gas::GasArgs,
-    token::TokenArgs,
-    tx::TxArgs,
-    block::BlockArgs,
-    chains::ChainsArgs,
-    config::ConfigArgs,
 };
 
 #[derive(Debug, Parser)]
@@ -43,7 +39,7 @@ enum Commands {
     Txlist(TxlistArgs),
     /// List ERC-20 / NFT token transfers
     Transfers(TransfersArgs),
-    /// Contract source, ABI, and bytecode
+    /// Contract source, ABI, bytecode, and proxy resolution
     Contract(ContractArgs),
     /// Current gas prices
     Gas(GasArgs),
@@ -65,7 +61,7 @@ async fn main() {
     let cfg = Config::load();
     if let Err(e) = run(cli.command, &cfg).await {
         eprintln!("{} {}", "error:".red().bold(), e);
-        std::process::exit(1);
+        std::process::exit(e.exit_code());
     }
 }
 
