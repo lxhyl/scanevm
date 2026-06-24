@@ -69,10 +69,10 @@ struct NftRow {
 }
 
 pub async fn run(args: &TransfersArgs, cfg: &Config) -> Result<()> {
-    let api_key = cfg.require_api_key()?;
+    let keys = cfg.require_keys()?;
     let chain_name = args.chain.as_str();
     let chain = resolve_chain(chain_name)?;
-    let client = EtherscanClient::new(api_key, chain.chain_id);
+    let client = EtherscanClient::new(keys, chain.chain_id, cfg.no_cache);
 
     let limit = args.limit.to_string();
     let use_json = args.json || cfg.default_output == OutputFormat::Json;

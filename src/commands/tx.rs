@@ -22,10 +22,10 @@ pub struct TxArgs {
 }
 
 pub async fn run(args: &TxArgs, cfg: &Config) -> Result<()> {
-    let api_key = cfg.require_api_key()?;
+    let keys = cfg.require_keys()?;
     let chain_name = args.chain.as_str();
     let chain = resolve_chain(chain_name)?;
-    let client = EtherscanClient::new(api_key, chain.chain_id);
+    let client = EtherscanClient::new(keys, chain.chain_id, cfg.no_cache);
 
     let cache_parts = ["tx", args.hash.as_str()];
     let txhash_params = format!(r#"{{"txhash":"{}"}}"#, args.hash);

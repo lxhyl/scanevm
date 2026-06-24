@@ -70,15 +70,17 @@ pub async fn resolve_implementation(
             via: "zeppelinos (legacy)",
         }));
     }
-    // 5. Etherscan's own proxy metadata, as a last resort.
+    // 5. Etherscan's own proxy metadata, as a last resort. This reads the
+    // upgradeable implementation pointer, so it must not be cached permanently —
+    // `source_cache_policy` returns `Skip` for proxies, keeping it fresh.
     if let Ok(sources) = client
-        .call_cached::<Vec<ContractSource>>(
-            None,
+        .call_cached_with::<Vec<ContractSource>, _>(
             &[
                 ("module", "contract"),
                 ("action", "getsourcecode"),
                 ("address", address),
             ],
+            |s: &Vec<ContractSource>| crate::types::source_cache_policy(s.first()),
         )
         .await
     {

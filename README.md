@@ -127,9 +127,31 @@ agents can branch — e.g. retry on `4` but give up on `2`:
 | 7 | not found (no such block / tx) |
 | 8 | contract source not verified |
 
-Environment variables: `ETHERSCAN_API_KEY` (overrides the config file),
-`SCANEVM_NO_CACHE=1` (disable the local response cache). Config lives at
-`~/.scanevm/config.json` (written `0600`); cache at `~/.scanevm/cache/`.
+Environment variables: `ETHERSCAN_API_KEYS` / `ETHERSCAN_API_KEY` (a key or
+comma-separated pool; overrides the config file), `SCANEVM_NO_CACHE=1` (disable
+the local response cache). Config lives at `~/.scanevm/config.json` (written
+`0600`); cache at `~/.scanevm/cache/`.
+
+## Caching
+
+Responses are cached on disk at `~/.scanevm/cache/`, with the lifetime chosen by
+how mutable the data is:
+
+| Data | Cached |
+|------|--------|
+| Verified **non-proxy** source / ABI / bytecode, mined blocks, confirmed txs | permanently (immutable) |
+| **Proxy / upgradeable** contract source | **never — always fetched fresh** so the current implementation shows |
+| Proxy → implementation resolution | 60s |
+| Balances, token supply | seconds |
+| Gas, tx lists, transfers | not cached (always live) |
+
+So an upgradeable contract always reflects its latest implementation, while
+immutable data is served instantly from cache. To force a fully live run, pass
+`--no-cache` (any command) or set `SCANEVM_NO_CACHE=1`:
+
+```sh
+scanevm contract source 0x... -c eth --no-cache   # skip cache read + write
+```
 
 ## Installation
 
@@ -160,6 +182,34 @@ scanevm config set-key <YOUR_API_KEY>
 ```
 
 You can also set the `ETHERSCAN_API_KEY` environment variable, which overrides the config file.
+
+### API key pool (higher throughput)
+
+Etherscan rate-limits each key to **5 requests/second** on the free tier. Configure
+**several keys** and scanevm pools them — each request picks the key that's been idle
+longest and each key is throttled independently, so *N* keys sustain roughly *N×* the
+rate limit. If one key gets rate-limited mid-run, scanevm cools it down and rotates to
+another key automatically.
+
+```sh
+# Set the whole pool at once (space- or comma-separated)
+scanevm config set-key KEY_1 KEY_2 KEY_3
+
+# Or build it up / trim it
+scanevm config add-key KEY_4
+scanevm config remove-key KEY_2
+
+# See how many keys are configured (keys are shown masked)
+scanevm config show
+```
+
+Via environment (overrides the config file), use `ETHERSCAN_API_KEYS` for a list:
+
+```sh
+export ETHERSCAN_API_KEYS="KEY_1,KEY_2,KEY_3"
+```
+
+A single `ETHERSCAN_API_KEY` still works and also accepts a comma-separated list.
 
 ## Supported Chains
 

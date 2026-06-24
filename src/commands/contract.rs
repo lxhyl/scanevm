@@ -153,15 +153,17 @@ pub async fn run(args: &ContractArgs, cfg: &Config) -> Result<()> {
 }
 
 async fn fetch_source(client: &EtherscanClient, address: &str) -> Result<ContractSource> {
-    // Verified source is immutable, so cache it permanently.
+    // Verified non-proxy source is immutable → cache forever; proxies are
+    // upgradeable and unverified contracts can still get verified → always
+    // re-fetch (see `source_cache_policy`).
     let sources: Vec<ContractSource> = client
-        .call_cached(
-            None,
+        .call_cached_with(
             &[
                 ("module", "contract"),
                 ("action", "getsourcecode"),
                 ("address", address),
             ],
+            |s: &Vec<ContractSource>| crate::types::source_cache_policy(s.first()),
         )
         .await?;
     Ok(sources.into_iter().next().unwrap_or_default())
@@ -178,9 +180,9 @@ async fn run_source(
     use_json_flag: bool,
     cfg: &Config,
 ) -> Result<()> {
-    let api_key = cfg.require_api_key()?;
+    let keys = cfg.require_keys()?;
     let chain = resolve_chain(chain_name)?;
-    let client = EtherscanClient::new(api_key, chain.chain_id);
+    let client = EtherscanClient::new(keys, chain.chain_id, cfg.no_cache);
 
     let mut source = fetch_source(&client, address).await?;
     let mut display_address = address.to_string();
@@ -408,9 +410,9 @@ async fn run_abi(
     use_json_flag: bool,
     cfg: &Config,
 ) -> Result<()> {
-    let api_key = cfg.require_api_key()?;
+    let keys = cfg.require_keys()?;
     let chain = resolve_chain(chain_name)?;
-    let client = EtherscanClient::new(api_key, chain.chain_id);
+    let client = EtherscanClient::new(keys, chain.chain_id, cfg.no_cache);
 
     let mut target = address.to_string();
     if follow_impl {
@@ -486,9 +488,9 @@ async fn run_bytecode(
     use_json_flag: bool,
     cfg: &Config,
 ) -> Result<()> {
-    let api_key = cfg.require_api_key()?;
+    let keys = cfg.require_keys()?;
     let chain = resolve_chain(chain_name)?;
-    let client = EtherscanClient::new(api_key, chain.chain_id);
+    let client = EtherscanClient::new(keys, chain.chain_id, cfg.no_cache);
 
     // Deployed bytecode at a given address is immutable; cache permanently.
     let bytecode: String = client
@@ -514,9 +516,9 @@ async fn run_impl(
     use_json_flag: bool,
     cfg: &Config,
 ) -> Result<()> {
-    let api_key = cfg.require_api_key()?;
+    let keys = cfg.require_keys()?;
     let chain = resolve_chain(chain_name)?;
-    let client = EtherscanClient::new(api_key, chain.chain_id);
+    let client = EtherscanClient::new(keys, chain.chain_id, cfg.no_cache);
     let use_json = use_json_flag || cfg.default_output == OutputFormat::Json;
 
     let found = crate::proxy::resolve_implementation(&client, address).await?;
@@ -590,9 +592,9 @@ async fn run_facets(
     use_json_flag: bool,
     cfg: &Config,
 ) -> Result<()> {
-    let api_key = cfg.require_api_key()?;
+    let keys = cfg.require_keys()?;
     let chain = resolve_chain(chain_name)?;
-    let client = EtherscanClient::new(api_key, chain.chain_id);
+    let client = EtherscanClient::new(keys, chain.chain_id, cfg.no_cache);
 
     let diamond = crate::diamond::resolve_facets(&client, address)
         .await?

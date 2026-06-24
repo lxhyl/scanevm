@@ -30,10 +30,15 @@ use commands::{
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+
+    /// Bypass the local response cache for this run (skip both read and write).
+    /// Note: upgradeable (proxy) contracts are never cached regardless.
+    #[arg(long, global = true)]
+    no_cache: bool,
 }
 
 /// Shown at the bottom of `--help`. Most commands accept `--json` for
-/// machine-readable output; env vars: ETHERSCAN_API_KEY, SCANEVM_NO_CACHE.
+/// machine-readable output; env vars: ETHERSCAN_API_KEYS, SCANEVM_NO_CACHE.
 const EXIT_CODES_HELP: &str = "\
 Exit codes:
   0  success
@@ -45,7 +50,11 @@ Exit codes:
   7  not found (no such block / tx)
   8  contract source not verified
 
-Most commands accept --json. Env: ETHERSCAN_API_KEY, SCANEVM_NO_CACHE=1.";
+Most commands accept --json. Configure multiple API keys (config set-key K1 K2 ...)
+to pool past the 5 req/s per-key limit. Verified non-proxy source is cached
+permanently; proxy (upgradeable) contracts are always fetched fresh. Pass
+--no-cache to skip the cache entirely for one run.
+Env: ETHERSCAN_API_KEYS (comma-separated pool), ETHERSCAN_API_KEY, SCANEVM_NO_CACHE=1.";
 
 #[derive(Debug, Subcommand)]
 enum Commands {
@@ -74,7 +83,8 @@ enum Commands {
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let cli = Cli::parse();
-    let cfg = Config::load();
+    let mut cfg = Config::load();
+    cfg.no_cache = cli.no_cache;
     if let Err(e) = run(cli.command, &cfg).await {
         eprintln!("{} {}", "error:".red().bold(), e);
         std::process::exit(e.exit_code());

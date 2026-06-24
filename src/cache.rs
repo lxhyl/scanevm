@@ -28,14 +28,15 @@ pub struct Cache {
 }
 
 impl Cache {
-    /// Build the default cache rooted at `~/.scanevm/cache`, honoring
-    /// `SCANEVM_NO_CACHE`.
-    pub fn new() -> Self {
-        let disabled = std::env::var_os("SCANEVM_NO_CACHE")
+    /// Build the default cache rooted at `~/.scanevm/cache`. Disabled (no reads
+    /// or writes) when `force_disable` is set — e.g. the `--no-cache` flag — or
+    /// when `SCANEVM_NO_CACHE` is set in the environment.
+    pub fn new(force_disable: bool) -> Self {
+        let env_disabled = std::env::var_os("SCANEVM_NO_CACHE")
             .map(|v| !v.is_empty())
             .unwrap_or(false);
         let dir = dirs::home_dir().map(|h| h.join(".scanevm").join("cache"));
-        let enabled = !disabled && dir.is_some();
+        let enabled = !force_disable && !env_disabled && dir.is_some();
         Cache { dir, enabled }
     }
 
@@ -139,6 +140,14 @@ mod tests {
         // TTL of 0 seconds means expires_at == now, so it must read back as a miss.
         assert_eq!(cache.get("k"), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn force_disabled_cache_never_reads_or_writes() {
+        // `--no-cache` builds a disabled cache: writes are dropped and reads miss.
+        let cache = Cache::new(true);
+        cache.put("k", "v", None);
+        assert_eq!(cache.get("k"), None);
     }
 
     #[test]

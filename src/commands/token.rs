@@ -22,10 +22,10 @@ pub struct TokenArgs {
 }
 
 pub async fn run(args: &TokenArgs, cfg: &Config) -> Result<()> {
-    let api_key = cfg.require_api_key()?;
+    let keys = cfg.require_keys()?;
     let chain_name = args.chain.as_str();
     let chain = resolve_chain(chain_name)?;
-    let client = EtherscanClient::new(api_key, chain.chain_id);
+    let client = EtherscanClient::new(keys, chain.chain_id, cfg.no_cache);
 
     // Fetch token info (metadata changes rarely — cache for an hour).
     let infos: Vec<TokenInfo> = client

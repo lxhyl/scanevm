@@ -12,8 +12,21 @@ use crate::error::{Result, ScanevmError};
 const BASE_URL: &str = "https://api.etherscan.io/v2/api";
 /// Retry transient failures (timeouts, 429, 5xx, status=0 rate-limit) this many times.
 const MAX_RETRIES: u32 = 3;
-/// Minimum spacing between requests — stays under Etherscan's free 5 req/s ceiling.
+/// Minimum spacing between requests *per key* — stays under Etherscan's free
+/// 5 req/s ceiling. With N keys in the pool the aggregate ceiling is ~N× this.
 const MIN_REQUEST_INTERVAL: Duration = Duration::from_millis(220);
+
+/// How to cache a freshly-fetched value, decided *from the value itself* by
+/// [`EtherscanClient::call_cached_with`]. Lets a response be cached permanently
+/// only when it is known-immutable (e.g. a verified, non-proxy contract) while
+/// upgradeable or not-yet-final responses are always re-fetched.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CachePolicy {
+    /// Cache forever — the data can never change for this key.
+    Permanent,
+    /// Never cache — always hit the network (and ignore any stale entry).
+    Skip,
+}
 
 /// Etherscan REST `message` values that mean "the query was fine, there is just
 /// no data" — callers should get an empty collection rather than an error.
@@ -25,11 +38,16 @@ const NO_RECORDS: &[&str] = &[
 
 pub struct EtherscanClient {
     http: reqwest::Client,
-    api_key: String,
+    /// The API key pool. Each request picks one key (see [`Self::throttle`]);
+    /// `apikey` is appended to the query at send time, not baked in earlier.
+    keys: Vec<String>,
     chain_id: u64,
     cache: Cache,
-    /// Reserved time of the next allowed request, for client-side throttling.
-    last_request: Mutex<Option<Instant>>,
+    /// Per-key reservation timeline: `schedule[i]` is the earliest instant
+    /// `keys[i]` may next be used. Guards client-side throttling so each key
+    /// independently stays under the rate limit, and lets a rate-limited key be
+    /// cooled down (see [`Self::penalize`]) so retries rotate to a fresh one.
+    schedule: Mutex<Vec<Instant>>,
 }
 
 #[derive(Deserialize)]
@@ -40,19 +58,26 @@ struct ApiEnvelope {
 }
 
 impl EtherscanClient {
-    pub fn new(api_key: String, chain_id: u64) -> Self {
+    /// Build a client over a pool of one or more API keys. Callers obtain the
+    /// pool from [`crate::config::Config::require_keys`], which guarantees it is
+    /// non-empty; an empty pool would make every request fail. `no_cache`
+    /// (the `--no-cache` flag) disables the local response cache for this run.
+    pub fn new(keys: Vec<String>, chain_id: u64, no_cache: bool) -> Self {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(30))
             .user_agent(concat!("scanevm/", env!("CARGO_PKG_VERSION")))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
+        // All keys start free now; ties resolve to the lowest index so a single
+        // key behaves exactly as before.
+        let schedule = vec![Instant::now(); keys.len()];
         Self {
             http,
-            api_key,
+            keys,
             chain_id,
-            cache: Cache::new(),
-            last_request: Mutex::new(None),
+            cache: Cache::new(no_cache),
+            schedule: Mutex::new(schedule),
         }
     }
 
@@ -79,6 +104,36 @@ impl EtherscanClient {
         let value: T = self.call(params).await?;
         if let Ok(serialized) = serde_json::to_string(&value) {
             self.cache.put(&key, &serialized, ttl);
+        }
+        Ok(value)
+    }
+
+    /// Like [`call_cached`](Self::call_cached), but the cache lifetime is chosen
+    /// from the fetched value via `policy`, so a single endpoint can be cached
+    /// permanently for immutable results yet re-fetched for upgradeable ones.
+    ///
+    /// `policy` is consulted on the cached value too: a cache entry whose value
+    /// now resolves to [`CachePolicy::Skip`] is ignored and re-fetched, so even
+    /// entries written by an older build (before the policy existed) can't pin
+    /// stale data for an upgradeable contract.
+    pub async fn call_cached_with<T, F>(&self, params: &[(&str, &str)], policy: F) -> Result<T>
+    where
+        T: DeserializeOwned + Serialize,
+        F: Fn(&T) -> CachePolicy,
+    {
+        let key = call_key(self.chain_id, params);
+        if let Some(raw) = self.cache.get(&key) {
+            if let Ok(value) = serde_json::from_str::<T>(&raw) {
+                if policy(&value) == CachePolicy::Permanent {
+                    return Ok(value);
+                }
+            }
+        }
+        let value: T = self.call(params).await?;
+        if policy(&value) == CachePolicy::Permanent {
+            if let Ok(serialized) = serde_json::to_string(&value) {
+                self.cache.put(&key, &serialized, None);
+            }
         }
         Ok(value)
     }
@@ -126,20 +181,18 @@ impl EtherscanClient {
     }
 
     fn base_query(&self, params: &[(&str, &str)]) -> Vec<(String, String)> {
-        let mut query = vec![
-            ("chainid".to_string(), self.chain_id.to_string()),
-            ("apikey".to_string(), self.api_key.clone()),
-        ];
+        // `apikey` is appended later, in `send`, once a pool key is chosen.
+        let mut query = vec![("chainid".to_string(), self.chain_id.to_string())];
         query.extend(params.iter().map(|(k, v)| (k.to_string(), v.to_string())));
         query
     }
 
     fn proxy_query(&self, method: &str, json_params: &str) -> Vec<(String, String)> {
         // Etherscan's proxy module uses query params, not a JSON body;
-        // `action` doubles as the JSON-RPC method name.
+        // `action` doubles as the JSON-RPC method name. `apikey` is appended
+        // later, in `send`, once a pool key is chosen.
         let mut query = vec![
             ("chainid".to_string(), self.chain_id.to_string()),
-            ("apikey".to_string(), self.api_key.clone()),
             ("module".to_string(), "proxy".to_string()),
             ("action".to_string(), method.to_string()),
         ];
@@ -163,18 +216,27 @@ impl EtherscanClient {
 
     /// Send a request, retrying transient failures with backoff, and return the
     /// raw response body. The URL (which carries the API key) is never surfaced.
+    ///
+    /// Each attempt picks a pool key via [`Self::throttle`] and appends it as
+    /// `apikey`. On a rate-limit response the offending key is cooled down (see
+    /// [`Self::penalize`]) before retrying, so with more than one key the retry
+    /// rotates to a fresh key immediately; with a single key the cooldown simply
+    /// becomes the backoff wait, preserving the original behavior.
     async fn send(&self, query: &[(String, String)]) -> Result<String> {
         let mut attempt: u32 = 0;
         loop {
-            self.throttle().await;
-            match self.http.get(BASE_URL).query(query).send().await {
+            let idx = self.throttle().await;
+            let mut q = Vec::with_capacity(query.len() + 1);
+            q.extend_from_slice(query);
+            q.push(("apikey".to_string(), self.keys[idx].clone()));
+            match self.http.get(BASE_URL).query(&q).send().await {
                 Ok(resp) => {
                     let status = resp.status();
                     if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
                         let retry_after = retry_after_secs(&resp);
                         if attempt < MAX_RETRIES {
                             attempt += 1;
-                            sleep(backoff_delay(attempt, retry_after)).await;
+                            self.penalize(idx, backoff_delay(attempt, retry_after));
                             continue;
                         }
                         return Err(if status == StatusCode::TOO_MANY_REQUESTS {
@@ -187,7 +249,7 @@ impl EtherscanClient {
                     // Etherscan also signals rate limiting via a 200 + status=0 body.
                     if is_rate_limited_body(&body) && attempt < MAX_RETRIES {
                         attempt += 1;
-                        sleep(backoff_delay(attempt, None)).await;
+                        self.penalize(idx, backoff_delay(attempt, None));
                         continue;
                     }
                     return Ok(body);
@@ -205,31 +267,44 @@ impl EtherscanClient {
         }
     }
 
-    /// Block until at least `MIN_REQUEST_INTERVAL` has passed since the previous
-    /// request. Reserving the next slot under the lock keeps concurrent calls
-    /// (e.g. `tokio::join!`) properly serialized below the rate limit.
-    async fn throttle(&self) {
-        let wait = {
-            let mut guard = self.last_request.lock().unwrap();
-            let now = Instant::now();
-            let (slot, wait) = match *guard {
-                Some(prev) => {
-                    let earliest = prev + MIN_REQUEST_INTERVAL;
-                    if earliest > now {
-                        (earliest, earliest - now)
-                    } else {
-                        (now, Duration::ZERO)
-                    }
-                }
-                None => (now, Duration::ZERO),
-            };
-            *guard = Some(slot);
-            wait
+    /// Reserve the next free key in the pool, sleeping until its slot opens, and
+    /// return its index. Picking the soonest-free key under the lock keeps
+    /// concurrent calls (e.g. `tokio::join!`) spread across keys and each key
+    /// individually below the rate limit.
+    async fn throttle(&self) -> usize {
+        let (idx, wait) = {
+            let mut sched = self.schedule.lock().unwrap();
+            reserve_slot(&mut sched, Instant::now())
         };
         if !wait.is_zero() {
             sleep(wait).await;
         }
+        idx
     }
+
+    /// Push `keys[idx]`'s next-free instant out by `delay` (a no-op if it is
+    /// already further out). After a rate-limit response this steers the next
+    /// [`Self::throttle`] toward a different, cooler key.
+    fn penalize(&self, idx: usize, delay: Duration) {
+        let mut sched = self.schedule.lock().unwrap();
+        let until = Instant::now() + delay;
+        if sched[idx] < until {
+            sched[idx] = until;
+        }
+    }
+}
+
+/// Pick the key whose slot frees up soonest, reserve it (advancing its slot by
+/// `MIN_REQUEST_INTERVAL` from whichever is later, the slot or `now`), and
+/// return its index plus how long the caller must wait before using it.
+///
+/// Pulled out as a pure function so the scheduling can be unit-tested without
+/// real time. `sched` must be non-empty.
+fn reserve_slot(sched: &mut [Instant], now: Instant) -> (usize, Duration) {
+    let idx = (0..sched.len()).min_by_key(|&i| sched[i]).unwrap_or(0);
+    let earliest = sched[idx].max(now);
+    sched[idx] = earliest + MIN_REQUEST_INTERVAL;
+    (idx, earliest.saturating_duration_since(now))
 }
 
 fn parse_envelope<T: DeserializeOwned>(body: &str) -> Result<T> {
@@ -439,6 +514,37 @@ mod tests {
         assert_eq!(backoff_delay(2, None), Duration::from_millis(500));
         assert_eq!(backoff_delay(3, None), Duration::from_millis(1000));
         assert!(backoff_delay(10, None) <= Duration::from_millis(4000));
+    }
+
+    #[test]
+    fn single_key_throttles_to_fixed_cadence() {
+        // One key always reserves index 0 and spaces requests by the interval.
+        let base = Instant::now();
+        let mut sched = vec![base];
+        assert_eq!(reserve_slot(&mut sched, base), (0, Duration::ZERO));
+        assert_eq!(reserve_slot(&mut sched, base), (0, MIN_REQUEST_INTERVAL));
+        assert_eq!(reserve_slot(&mut sched, base), (0, 2 * MIN_REQUEST_INTERVAL));
+    }
+
+    #[test]
+    fn two_keys_burst_then_alternate() {
+        // Two keys let the first two requests fire immediately (a 2× burst),
+        // then alternate at the per-key interval — i.e. ~2× the throughput.
+        let base = Instant::now();
+        let mut sched = vec![base, base];
+        assert_eq!(reserve_slot(&mut sched, base), (0, Duration::ZERO));
+        assert_eq!(reserve_slot(&mut sched, base), (1, Duration::ZERO));
+        assert_eq!(reserve_slot(&mut sched, base), (0, MIN_REQUEST_INTERVAL));
+        assert_eq!(reserve_slot(&mut sched, base), (1, MIN_REQUEST_INTERVAL));
+    }
+
+    #[test]
+    fn reserve_skips_a_penalized_key() {
+        // A key cooled down (as `penalize` does) is passed over in favor of a
+        // free one, with no wait — the rate-limit-rotation path.
+        let base = Instant::now();
+        let mut sched = vec![base + Duration::from_secs(10), base];
+        assert_eq!(reserve_slot(&mut sched, base), (1, Duration::ZERO));
     }
 
     #[test]
