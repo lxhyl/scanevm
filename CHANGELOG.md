@@ -4,7 +4,12 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0]
+
+scanevm now does one thing, fetching on-chain contract code, and needs no API key: source
+comes from Sourcify, Etherscan, Blockscout and Routescan, chain state from public RPCs,
+and proxy detection follows the scan core's. `--json` output uses the scan service's
+report shapes. See **Breaking** below before upgrading scripts.
 
 ### Removed
 - **Breaking:** the chain-data commands `balance`, `txlist`, `transfers`, `gas`,
@@ -12,7 +17,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   contract code (`contract source` / `abi` / `bytecode` / `impl` / `facets`).
   Exit code 7 ("no such block / tx") is retired with them.
 - **Breaking:** the chains `moonbeam` (1284), `holesky` (17000) and `scroll-sepolia`
-  (534351) are gone: Etherscan v2 no longer serves them and no other provider does.
+  (534351) are gone: Etherscan v2 no longer serves them and no working provider is
+  left (holesky itself has been shut down). Their chain ids still work as bare ids.
 
 ### Added
 - **Source from four providers, no key needed.** Sourcify, Etherscan, Blockscout and
@@ -67,8 +73,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   public RPC endpoints. Seven chains are new: hyperevm, sonic, mantle, berachain,
   monad, xlayer and plasma. `polygon`'s currency is `POL`.
 - Any numeric chain id (decimal or `0x` hex) is accepted, not only listed chains.
-- `scanevm chains` shows each chain's sources; `--json` prints
-  `{"chains": [{id, name, title, aliases, testnet, explorer, sources}]}`.
+- **Breaking:** `scanevm chains --json` prints
+  `{"chains": [{id, name, title, aliases, testnet, explorer, sources}]}` (the scan
+  service's `/v1/chains`) instead of a bare array; the table shows each chain's sources.
 - Proxy / diamond detection and `contract bytecode` read chain state over the
   chain's public RPCs first, falling back to Etherscan's proxy module when they all
   fail. Event logs (diamond replay) still come from Etherscan's logs API first, with a

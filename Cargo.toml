@@ -1,13 +1,13 @@
 [package]
 name = "scanevm"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
-description = "A fast CLI for fetching verified smart contract source code, ABIs and bytecode across EVM chains."
+description = "A fast CLI for fetching verified smart contract source code, ABIs and bytecode across EVM chains, from Sourcify, Etherscan, Blockscout and Routescan. No API key needed."
 license = "MIT"
 repository = "https://github.com/lxhyl/scanevm"
 homepage = "https://github.com/lxhyl/scanevm"
 readme = "README.md"
-keywords = ["ethereum", "etherscan", "evm", "blockchain", "cli"]
+keywords = ["ethereum", "etherscan", "sourcify", "evm", "cli"]
 categories = ["command-line-utilities", "cryptography::cryptocurrencies"]
 exclude = [".github/", ".claude/", "install.sh"]
 

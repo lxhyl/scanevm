@@ -1,20 +1,39 @@
 # scanevm
 
-A fast CLI for fetching verified smart contract source code, ABIs and bytecode across EVM chains.
+A fast CLI for fetching verified smart contract source code, ABIs and bytecode across
+EVM chains, from Sourcify, Etherscan, Blockscout and Routescan. **No API key needed.**
 
 ```sh
-# Fetch USDC source code and save all files locally
-scanevm contract source 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 -c ethereum --save ./usdc
+# Fetch USDC's implementation source and save all files locally
+scanevm contract source 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 -c ethereum --impl --save ./usdc
 ```
 
-## Contract Commands
+## Where the source comes from
 
-This is the primary use case. Every subcommand works on any supported chain.
+Each chain lists its providers in order (`scanevm chains` shows them). scanevm asks them
+in that order and keeps the best match:
+
+| Rank | Provider | Key |
+|------|----------|-----|
+| 1 | Sourcify, exact match | none |
+| 2 | Etherscan v2 | your own (optional) |
+| 3 | Sourcify, partial match | none |
+| 4 | Blockscout (where the chain has an instance) | none |
+| 5 | Routescan | none |
+
+It stops as soon as no later provider could do better. A provider that fails (rate limit,
+network) is noted and the next one is asked. Without an Etherscan key, Etherscan is
+skipped and everything else works; `--json` reports what each provider answered.
+
+Chain state (bytecode, proxy storage slots, loupe calls) is read over the chain's public
+RPCs, with Etherscan as the fallback when a key is configured.
+
+## Contract Commands
 
 ### `contract source` — download verified source code
 
 ```sh
-# Show contract metadata (name, compiler, EVM version, license, proxy status)
+# Show contract metadata (name, compiler, EVM version, license, proxy hint, provider)
 scanevm contract source <ADDRESS> -c <CHAIN>
 
 # Print source to stdout
@@ -31,16 +50,18 @@ scanevm contract source <ADDRESS> -c <CHAIN> --flatten --save ./output
 scanevm contract source <PROXY> -c <CHAIN> --impl --save ./impl
 ```
 
-Multi-file contracts (Hardhat / standard JSON input format) are automatically unpacked — the original directory structure is preserved under `./output`.
-
-The metadata view shows proxy status and the implementation address:
+Multi-file contracts are unpacked with their original directory structure under
+`./output`. Source paths come from the provider, so unsafe ones are mapped to safe ones
+(`..` becomes `__`, absolute paths become relative).
 
 ```
-Contract     TransparentUpgradeableProxy
-Compiler     v0.8.4+commit.c7e474f2
-Optimization Yes (200 runs)
-License      MIT
+Contract     FiatTokenProxy
+Compiler     0.4.24+commit.e67f0147
+EVM Version  byzantium
+Optimization No
 Proxy        Yes (impl: 0x43506849D7C04F9138D1A2050bbF3A0c054402dd)
+Source       sourcify (partial)
+Files        1
 Chain        ethereum
 ```
 
@@ -56,23 +77,34 @@ scanevm contract abi <ADDRESS> -c <CHAIN> --json
 scanevm contract abi <PROXY> -c <CHAIN> --impl
 ```
 
-### `contract impl` — resolve a proxy's implementation address
+### `contract impl` — what runs behind a proxy
 
-Works even when Etherscan hasn't flagged the contract as a proxy — it reads the
-EIP-1967, EIP-1822 (UUPS), beacon, and legacy storage slots directly. If the
-address is a multi-facet diamond, it tells you to use `contract facets` instead
-of returning a single misleading address.
+Reads the chain directly, so it works whether or not an explorer flagged the contract.
+Detection order (the same as the scan core's):
+
+| Kind | How it's found |
+|------|----------------|
+| `eip7702` | EOA code `0xef0100…` (delegation designator) |
+| `eip1167` | minimal-proxy bytecode, vanity variants too |
+| `eip1967` | implementation slot; `transparent` (admin slot set) or `uups` (`proxiableUUID()`) |
+| `eip1967-beacon` | beacon slot, then `implementation()` / `childImplementation()` on the beacon |
+| `eip1822` | UUPS `PROXIABLE` slot |
+| `zeppelinos` | legacy ZeppelinOS slot |
+| `safe` | Safe proxy: `masterCopy` at slot 0 |
+| `diamond` | EIP-2535 loupe `facets()` / `facetAddresses()`, or `DiamondCut` replay |
+| `selector-router` | Pendle-style routers: `SelectorToFacetSet` replay |
+| `implementation-call` | `implementation()` on the contract (low confidence) |
+| `provider-hint` | a provider's proxy flag, when the chain can't confirm (low confidence) |
 
 ```sh
 scanevm contract impl <PROXY> -c <CHAIN>
 ```
 
-### `contract facets` — list the facets of a diamond / multi-facet proxy
+For a diamond it tells you to use `contract facets` instead of returning a single
+misleading address. Event replay needs full-history logs, which public RPCs usually
+refuse: with an Etherscan key it uses Etherscan's logs API.
 
-Resolves the full facet set four ways: DiamondLoupe `facets()` / `facetAddresses()`,
-standard EIP-2535 `DiamondCut` event replay, and `SelectorToFacetSet` event replay
-for Pendle-style custom selector routers (which expose neither the loupe nor
-`DiamondCut`).
+### `contract facets` — list the facets of a diamond / multi-facet proxy
 
 ```sh
 scanevm contract facets <DIAMOND> -c <CHAIN>
@@ -86,8 +118,8 @@ scanevm contract facets <DIAMOND> -c <CHAIN> --save ./facets --flatten
 scanevm contract facets <DIAMOND> -c <CHAIN> --abi
 ```
 
-For a normal (single-implementation) proxy, use `contract source <ADDR> --impl`
-instead. If you run `--impl` on a diamond it tells you to use `contract facets`.
+Facets are fetched four at a time. For a normal (single-implementation) proxy, use
+`contract source <ADDR> --impl` instead.
 
 ### `contract bytecode` — fetch deployed bytecode
 
@@ -98,47 +130,57 @@ scanevm contract bytecode <ADDRESS> -c <CHAIN>
 ## Other Commands
 
 ```
-scanevm chains                             List supported chains
-scanevm config ...                         API keys and defaults
+scanevm chains                             List supported chains and their providers
+scanevm config ...                         Optional Etherscan key(s) and defaults
 ```
-
-Add `--json` to any command for machine-readable output.
 
 ## Scripting & agents
 
-Add `--json` for machine-readable output (kept clean on stdout — progress notes
-go to stderr). Errors exit with a distinct code per failure class, so scripts and
-agents can branch — e.g. retry on `4` but give up on `2`:
+Add `--json` for machine-readable output (kept clean on stdout — progress notes go to
+stderr). The shapes are the scan service's, so tools can read either:
+
+| Command | `--json` prints |
+|---------|-----------------|
+| `contract source` | `{target, chain_id, address, status, code, source: {meta}, attempts, error}` — `meta` has `name`, `language`, `compiler`, `provider`, `match`, `providers_tried`, `proxy_hint`, `deployment`, `license`, `files` |
+| `contract impl` | `{target, chain_id, address, status, kind, variant, confidence, implementation, beacon, admin, facets, checked_at}` |
+| `contract facets` | `{root, resolution, implementations}` — one source report per facet |
+| `contract bytecode` | `{chain_id, address, codehash, size, delegation, code}` |
+| `contract abi` | the ABI array |
+| `chains` | `{chains: [{id, name, title, aliases, testnet, explorer, sources}]}` |
+
+`status` is `cached`, `fetched`, `not_verified`, `no_code` or `error`; the source report
+is printed for unverified contracts too. Errors exit with a distinct code per failure
+class, so scripts and agents can branch — e.g. retry on `4` but give up on `2`:
 
 | Code | Meaning |
 |------|---------|
 | 0 | success |
-| 2 | usage / config error (missing key, unknown chain, bad input) |
+| 2 | usage / config error (unknown chain, bad input) |
 | 3 | network error |
 | 4 | rate limited (retryable) |
 | 5 | invalid API key |
-| 6 | API error |
+| 6 | API error (also: not a proxy / not a diamond) |
+| 7 | not found (no contract code at the address) |
 | 8 | contract source not verified |
 
 Environment variables: `ETHERSCAN_API_KEYS` / `ETHERSCAN_API_KEY` (a key or
-comma-separated pool; overrides the config file), `SCANEVM_NO_CACHE=1` (disable
-the local response cache). Config lives at `~/.scanevm/config.json` (written
-`0600`); cache at `~/.scanevm/cache/`.
+comma-separated pool; overrides the config file), `SCANEVM_NO_CACHE=1` (disable the
+local cache). Config lives at `~/.scanevm/config.json` (written `0600`); cache at
+`~/.scanevm/cache/`.
 
 ## Caching
 
-Responses are cached on disk at `~/.scanevm/cache/`, with the lifetime chosen by
-how mutable the data is:
+Results are cached on disk at `~/.scanevm/cache/`, with the lifetime chosen by how
+mutable the data is:
 
 | Data | Cached |
 |------|--------|
-| Verified **non-proxy** source / ABI / bytecode | permanently (immutable) |
-| **Proxy / upgradeable** contract source | **never — always fetched fresh** so the current implementation shows |
-| Proxy → implementation resolution | 60s |
+| Verified **non-proxy** source and ABI (keyed by the code's hash), bytecode | permanently (immutable) |
+| Source of a contract a provider flags as a **proxy** | **never — always fetched fresh** |
+| Proxy storage slots | 60s |
+| Unverified results | not cached |
 
-So an upgradeable contract always reflects its latest implementation, while
-immutable data is served instantly from cache. To force a fully live run, pass
-`--no-cache` (any command) or set `SCANEVM_NO_CACHE=1`:
+To force a fully live run, pass `--no-cache` (any command) or set `SCANEVM_NO_CACHE=1`:
 
 ```sh
 scanevm contract source 0x... -c eth --no-cache   # skip cache read + write
@@ -164,9 +206,12 @@ curl -fsSL https://raw.githubusercontent.com/lxhyl/scanevm/main/install.sh | sh
 
 Re-run anytime to update to the latest version.
 
-## Setup
+## Etherscan key (optional)
 
-Get a free API key at [etherscan.io/apis](https://etherscan.io/apis) — the same key works for most EVM-compatible chains.
+scanevm works without a key. An Etherscan key adds Etherscan as a source, a fallback for
+chain reads, and its logs API for diamond event replay. Get a free one at
+[etherscan.io/apis](https://etherscan.io/apis) — the same key works for every chain
+Etherscan v2 serves.
 
 ```sh
 scanevm config set-key <YOUR_API_KEY>
