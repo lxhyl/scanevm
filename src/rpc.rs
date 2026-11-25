@@ -295,7 +295,7 @@ fn host(url: &str) -> &str {
 /// Decode `0x`-hex (or bare hex) into bytes; `None` if malformed.
 pub fn from_hex(s: &str) -> Option<Vec<u8>> {
     let h = s.trim().trim_start_matches("0x");
-    if h.len() % 2 != 0 {
+    if !h.len().is_multiple_of(2) {
         return None;
     }
     (0..h.len())
@@ -308,7 +308,7 @@ pub fn from_hex(s: &str) -> Option<Vec<u8>> {
 pub fn hex_to_u64(s: &str) -> u64 {
     let t = s.trim();
     match t.strip_prefix("0x") {
-        Some(h) if h.is_empty() => 0,
+        Some("") => 0,
         Some(h) => u64::from_str_radix(h, 16).unwrap_or(0),
         None => t.parse().unwrap_or(0),
     }
