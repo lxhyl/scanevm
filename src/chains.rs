@@ -10,8 +10,10 @@
 //! longer serves scroll, zksync, blast, fantom, cronos, moonriver or
 //! blast-sepolia, so those use the other providers. The Blockscout instances
 //! for polygon, arbitrum, base and gnosis sit behind a Cloudflare challenge for
-//! API clients and are left out. Not reachable from the checking machine, so
-//! unconfirmed: the blast and blast-sepolia RPCs.
+//! API clients and are left out. blast and blast-sepolia list no RPC: their
+//! public endpoints didn't answer (nor from Cloudflare, per the scan core), so
+//! proxy detection there needs a key-backed Etherscan, which doesn't serve
+//! them either, and source fetches go without a codehash.
 
 use serde::{Deserialize, Serialize};
 
@@ -262,7 +264,7 @@ pub static CHAINS: &[ChainInfo] = &[
         [SF],
         None,
         None,
-        ["https://rpc.blast.io"]
+        []
     ),
     chain!(
         42220,
@@ -547,7 +549,7 @@ pub static CHAINS: &[ChainInfo] = &[
         [RS],
         None,
         Some("testnet"),
-        ["https://sepolia.blast.io"]
+        []
     ),
 ];
 
@@ -655,7 +657,12 @@ mod tests {
                 "{}: routescan source and network must go together",
                 c.name
             );
-            assert!(!c.rpc.is_empty(), "{} has no RPC", c.name);
+            let no_rpc_ok = ["blast", "blast-sepolia"];
+            assert!(
+                !c.rpc.is_empty() || no_rpc_ok.contains(&c.name),
+                "{} has no RPC",
+                c.name
+            );
         }
     }
 }
