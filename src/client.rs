@@ -3,10 +3,9 @@ use std::time::{Duration, Instant};
 
 use reqwest::StatusCode;
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tokio::time::sleep;
 
-use crate::cache::Cache;
 use crate::error::{Result, ScanevmError};
 
 const BASE_URL: &str = "https://api.etherscan.io/v2/api";
@@ -15,18 +14,6 @@ const MAX_RETRIES: u32 = 3;
 /// Minimum spacing between requests *per key* — stays under Etherscan's free
 /// 5 req/s ceiling. With N keys in the pool the aggregate ceiling is ~N× this.
 const MIN_REQUEST_INTERVAL: Duration = Duration::from_millis(220);
-
-/// How to cache a freshly-fetched value, decided *from the value itself* by
-/// [`EtherscanClient::call_cached_with`]. Lets a response be cached permanently
-/// only when it is known-immutable (e.g. a verified, non-proxy contract) while
-/// upgradeable or not-yet-final responses are always re-fetched.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum CachePolicy {
-    /// Cache forever — the data can never change for this key.
-    Permanent,
-    /// Never cache — always hit the network (and ignore any stale entry).
-    Skip,
-}
 
 /// Etherscan REST `message` values that mean "the query was fine, there is just
 /// no data" — callers should get an empty collection rather than an error.
@@ -42,7 +29,6 @@ pub struct EtherscanClient {
     /// `apikey` is appended to the query at send time, not baked in earlier.
     keys: Vec<String>,
     chain_id: u64,
-    cache: Cache,
     /// Per-key reservation timeline: `schedule[i]` is the earliest instant
     /// `keys[i]` may next be used. Guards client-side throttling so each key
     /// independently stays under the rate limit, and lets a rate-limited key be
@@ -60,9 +46,8 @@ struct ApiEnvelope {
 impl EtherscanClient {
     /// Build a client over a pool of one or more API keys ([`crate::config::Config::keys`]).
     /// Callers only build one when the pool is non-empty; an empty pool would
-    /// make every request fail. `no_cache`
-    /// (the `--no-cache` flag) disables the local response cache for this run.
-    pub fn new(keys: Vec<String>, chain_id: u64, no_cache: bool) -> Self {
+    /// make every request fail. (Caching happens a layer up, in `fetch`.)
+    pub fn new(keys: Vec<String>, chain_id: u64) -> Self {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(30))
@@ -76,7 +61,6 @@ impl EtherscanClient {
             http,
             keys,
             chain_id,
-            cache: Cache::new(no_cache),
             schedule: Mutex::new(schedule),
         }
     }
@@ -85,36 +69,6 @@ impl EtherscanClient {
     pub async fn call<T: DeserializeOwned>(&self, params: &[(&str, &str)]) -> Result<T> {
         let body = self.send(&self.base_query(params)).await?;
         parse_envelope(&body)
-    }
-
-    /// Like [`call`](Self::call), but reads/writes a local cache whose lifetime is chosen
-    /// from the fetched value via `policy`, so a single endpoint can be cached
-    /// permanently for immutable results yet re-fetched for upgradeable ones.
-    ///
-    /// `policy` is consulted on the cached value too: a cache entry whose value
-    /// now resolves to [`CachePolicy::Skip`] is ignored and re-fetched, so even
-    /// entries written by an older build (before the policy existed) can't pin
-    /// stale data for an upgradeable contract.
-    pub async fn call_cached_with<T, F>(&self, params: &[(&str, &str)], policy: F) -> Result<T>
-    where
-        T: DeserializeOwned + Serialize,
-        F: Fn(&T) -> CachePolicy,
-    {
-        let key = call_key(self.chain_id, params);
-        if let Some(raw) = self.cache.get(&key) {
-            if let Ok(value) = serde_json::from_str::<T>(&raw) {
-                if policy(&value) == CachePolicy::Permanent {
-                    return Ok(value);
-                }
-            }
-        }
-        let value: T = self.call(params).await?;
-        if policy(&value) == CachePolicy::Permanent {
-            if let Ok(serialized) = serde_json::to_string(&value) {
-                self.cache.put(&key, &serialized, None);
-            }
-        }
-        Ok(value)
     }
 
     /// JSON-RPC proxy call — returns the deserialized `result` field.
@@ -365,16 +319,6 @@ pub(crate) fn backoff_delay(attempt: u32, retry_after: Option<u64>) -> Duration 
     Duration::from_millis(millis.min(4000))
 }
 
-fn call_key(chain_id: u64, params: &[(&str, &str)]) -> String {
-    let mut parts: Vec<String> = params
-        .iter()
-        .filter(|(k, _)| *k != "apikey")
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect();
-    parts.sort();
-    format!("call|{chain_id}|{}", parts.join("&"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -485,44 +429,5 @@ mod tests {
         let base = Instant::now();
         let mut sched = vec![base + Duration::from_secs(10), base];
         assert_eq!(reserve_slot(&mut sched, base), (1, Duration::ZERO));
-    }
-
-    #[test]
-    fn cache_keys_are_stable_and_distinct() {
-        let a = call_key(
-            1,
-            &[
-                ("module", "account"),
-                ("action", "balance"),
-                ("address", "0xA"),
-            ],
-        );
-        let b = call_key(
-            1,
-            &[
-                ("address", "0xA"),
-                ("action", "balance"),
-                ("module", "account"),
-            ],
-        );
-        assert_eq!(a, b, "key must be order-independent");
-        let c = call_key(
-            1,
-            &[
-                ("module", "account"),
-                ("action", "balance"),
-                ("address", "0xB"),
-            ],
-        );
-        assert_ne!(a, c, "different address must differ");
-        let d = call_key(
-            137,
-            &[
-                ("module", "account"),
-                ("action", "balance"),
-                ("address", "0xA"),
-            ],
-        );
-        assert_ne!(a, d, "different chain must differ");
     }
 }

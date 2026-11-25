@@ -25,6 +25,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The runtime code is read first: an EOA is "no contract code" (exit code 7, back with
   a new meaning), an EIP-7702 account names its delegate, and the codehash keys the
   local source cache.
+- **Proxy detection ported from the scan core.** In order: EIP-7702 delegation,
+  EIP-1167 minimal proxies (vanity variants too), EIP-1967 (told apart as `transparent`
+  by the admin slot or `uups` by `proxiableUUID()`, admin reported), EIP-1967 beacons
+  (`implementation()` or `childImplementation()`), EIP-1822, the legacy zeppelinos
+  slot, Safe proxies (`masterCopy` at slot 0), diamonds via the loupe, selector routers
+  and loupe-less diamonds via event replay, and a low-confidence `implementation()`
+  call. When the chain can't be read or nothing matches, a provider's proxy hint
+  (Etherscan, Sourcify or Blockscout) is used, as kind `provider-hint` with low
+  confidence; this replaces v0.2's Etherscan-only fallback.
 - `contract facets` fetches facets four at a time (a 43-facet diamond lists in under a
   minute cold, instead of three).
 
@@ -35,6 +44,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `proxy_hint`, `deployment`, `license` and `files` (`path`, `file`, `bytes`, `main`).
   `file` is where `--save` writes it. The report is printed for unverified contracts
   too, and the exit code still says what happened.
+- **Breaking:** `contract impl --json` prints the scan core's resolve report:
+  `{target, chain_id, address, status, kind, variant, confidence, implementation,
+  beacon, admin, facets, checked_at}` (plus `provider` for a `provider-hint`), with the
+  core's kind names (`eip1967`, `eip1967-beacon`, `zeppelinos`, `safe`, `diamond`,
+  `selector-router`, `implementation-call`, …). The table shows the kind, admin, beacon
+  and confidence.
+- **Breaking:** `contract facets --json` prints the core's follow report:
+  `{root, resolution, implementations}`, one source report per facet.
+- Event replay for loupe-less diamonds runs only when the bytecode looks like a
+  selector router, as in the core, and a failed log read is reported (exit code 3,
+  with a hint that an Etherscan key reads logs reliably) instead of being taken as
+  "no facets". Public RPCs are each tried for logs.
+- A storage word with non-zero high bytes is no longer read as an address.
 - `--save` maps unsafe source paths to safe ones (`..` becomes `__`, absolute paths
   become relative) instead of refusing them.
 - No API key configured is no longer an error.

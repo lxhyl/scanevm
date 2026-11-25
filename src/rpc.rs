@@ -142,11 +142,13 @@ impl<'a> Reader<'a> {
         if let Some(es) = self.etherscan {
             match etherscan_logs(es, address, topic0).await {
                 Ok(l) => return Ok(l),
-                Err(e) => errors.push(format!("etherscan: {e}")),
+                Err(e) => errors.push(format!("etherscan: {}", bare(&e))),
             }
         }
         let filter = json!([{ "address": address, "topics": [topic0], "fromBlock": "0x0", "toBlock": "latest" }]);
-        match self.rpc("eth_getLogs", filter).await {
+        // Nodes differ in how much history and what ranges they serve, so one
+        // node's refusal says nothing about the next: try them all.
+        match self.rpc("eth_getLogs", filter, false).await {
             Ok(Answer::Result(v)) => {
                 let mut logs: Vec<Log> = serde_json::from_value(v).unwrap_or_default();
                 sort_logs(&mut logs);
@@ -156,17 +158,23 @@ impl<'a> Reader<'a> {
                 });
             }
             Ok(Answer::RpcError(m)) => errors.push(format!("rpc: {m}")),
-            Err(e) => errors.push(format!("rpc: {e}")),
+            Err(e) => errors.push(format!("rpc: {}", bare(&e))),
         }
+        let hint = if self.etherscan.is_none() {
+            "; public RPCs often refuse full-history log queries: an Etherscan key \
+             (scanevm config set-key <KEY>) reads them through Etherscan's logs API"
+        } else {
+            ""
+        };
         Err(ScanevmError::Network(format!(
-            "couldn't read event logs ({})",
+            "couldn't read event logs ({}){hint}",
             errors.join("; ")
         )))
     }
 
     /// A state read: the chain's public RPCs, then Etherscan's proxy module.
     async fn read(&self, method: &str, params: Value, etherscan_params: &str) -> Result<Value> {
-        let rpc_err = match self.rpc(method, params).await {
+        let rpc_err = match self.rpc(method, params, true).await {
             Ok(Answer::Result(v)) => return Ok(v),
             // The node answered; another one would answer the same.
             Ok(Answer::RpcError(m)) => {
@@ -181,8 +189,9 @@ impl<'a> Reader<'a> {
     }
 
     /// Ask each endpoint in turn until one answers. An `Err` means none could
-    /// (or there are none).
-    async fn rpc(&self, method: &str, params: Value) -> Result<Answer> {
+    /// (or there are none). With `final_errors`, a node's JSON-RPC error (a
+    /// revert) is the answer; without, the next node is asked.
+    async fn rpc(&self, method: &str, params: Value, final_errors: bool) -> Result<Answer> {
         let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
         let mut last = format!("no public RPC listed for {}", self.chain.label());
         for url in self.chain.rpc {
@@ -213,7 +222,7 @@ impl<'a> Reader<'a> {
                 .as_str()
                 .unwrap_or("unknown error")
                 .to_string();
-            if is_endpoint_trouble(status.as_u16(), &msg) {
+            if !final_errors || is_endpoint_trouble(status.as_u16(), &msg) {
                 last = format!("{host}: {msg}");
                 continue;
             }
@@ -276,6 +285,14 @@ async fn etherscan_logs(es: &EtherscanClient, address: &str, topic0: &str) -> Re
     }
     sort_logs(&mut logs);
     Ok(Logs { logs, truncated })
+}
+
+/// An error's message without its "Network error:" style prefix, for nesting.
+fn bare(e: &ScanevmError) -> String {
+    match e {
+        ScanevmError::Network(m) | ScanevmError::ApiError(m) => m.clone(),
+        other => other.to_string(),
+    }
 }
 
 fn sort_logs(logs: &mut [Log]) {
@@ -403,10 +420,7 @@ mod tests {
         let reader = Reader::new(resolve_chain("ethereum").unwrap(), None, true);
         // LI.FI diamond: DiamondLoupe facets().
         let lifi = "0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae";
-        let f = crate::diamond::resolve_facets(&reader, lifi)
-            .await
-            .unwrap()
-            .unwrap();
+        let f = crate::diamond::loupe(&reader, lifi).await.unwrap();
         assert!(f.facets.len() > 10, "{} facets", f.facets.len());
     }
 }

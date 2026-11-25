@@ -2,11 +2,12 @@ use crate::chains::{resolve_chain, ChainInfo};
 use crate::client::EtherscanClient;
 use crate::config::{Config, OutputFormat};
 use crate::error::{Result, ScanevmError};
-use crate::fetch::{disk_paths, report_json, Fetcher, Stored};
+use crate::fetch::{disk_paths, report_json, Fetcher, Report, ReportJson, Stored};
 use crate::output::{print_json, print_kv_table};
+use crate::proxy::{resolve_json, Kind, Resolution, ResolveJson};
 use crate::rpc::Reader;
 use crate::sources::lang_ext;
-use crate::util::{run_limited, sanitize_rel_path, to_hex};
+use crate::util::{checksum, run_limited, sanitize_rel_path, to_hex};
 use clap::{Args, Subcommand};
 use colored::Colorize;
 use std::path::{Component, Path, PathBuf};
@@ -159,22 +160,68 @@ pub async fn run(args: &ContractArgs, cfg: &Config) -> Result<()> {
 const FACET_CONCURRENCY: usize = 4;
 
 /// Fetch every facet's source, `FACET_CONCURRENCY` at a time, in facet order.
-async fn fetch_facets(
-    fetcher: &Fetcher<'_>,
-    diamond: &crate::diamond::Facets,
-) -> Vec<Result<Stored>> {
+async fn fetch_facets(fetcher: &Fetcher<'_>, diamond: &crate::diamond::Facets) -> Vec<Report> {
     let addrs: Vec<String> = diamond.facets.iter().map(|f| f.address.clone()).collect();
     run_limited(addrs, FACET_CONCURRENCY, |a| async move {
-        fetcher.fetch(&a).await.into_source()
+        fetcher.fetch(&a).await
     })
     .await
+}
+
+/// Follow a proxy to its single implementation. A diamond has many facets, so
+/// following one "implementation" would mislead: `Ok(None)` after telling the
+/// user to use `contract facets`.
+async fn follow_impl_of(
+    reader: &Reader<'_>,
+    fetcher: &Fetcher<'_>,
+    address: &str,
+    facets_hint: &str,
+) -> Result<Option<String>> {
+    let r = crate::proxy::resolve(reader, Some(fetcher), address).await?;
+    if let Some(f) = r.facets.as_ref().filter(|_| r.is_multi_facet()) {
+        eprintln!(
+            "{}",
+            format!(
+                "{address} is a {} with {} facets — run: scanevm contract facets {address} {facets_hint}",
+                r.kind.label(),
+                f.facets.len()
+            )
+            .yellow()
+        );
+        return Ok(None);
+    }
+    let imp = r
+        .implementation
+        .clone()
+        .ok_or_else(|| not_a_proxy(address, &r))?;
+    eprintln!(
+        "{}",
+        format!(
+            "→ following {} proxy {address} to implementation {imp}",
+            r.kind.label()
+        )
+        .dimmed()
+    );
+    Ok(Some(imp))
+}
+
+fn not_a_proxy(address: &str, r: &Resolution) -> ScanevmError {
+    match (&r.kind, &r.beacon) {
+        (Kind::Eip1967Beacon, Some(b)) => ScanevmError::ApiError(format!(
+            "{address} is a beacon proxy, but its beacon {b} returned no implementation"
+        )),
+        _ => ScanevmError::ApiError(format!(
+            "{address} does not appear to be a proxy (no implementation found via \
+             EIP-7702/1167/1967/1822, beacon, Safe, diamond, implementation() or provider hints)"
+        )),
+    }
 }
 
 /// The user's Etherscan client, when a key is configured. Without one,
 /// scanevm uses the keyless providers and public RPCs.
 fn etherscan_client(cfg: &Config, chain: &ChainInfo) -> Option<EtherscanClient> {
     let keys = cfg.keys();
-    (!keys.is_empty()).then(|| EtherscanClient::new(keys, chain.chain_id, cfg.no_cache))
+    (!keys.is_empty()).then(|| EtherscanClient::new(keys, chain.chain_id))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -197,45 +244,10 @@ async fn run_source(
 
     // Follow a proxy to its implementation if asked.
     if follow_impl {
-        let found = crate::proxy::resolve_implementation(&reader, es.as_ref(), address).await?;
-        // A storage-slot hit is an unambiguous single-implementation proxy.
-        let slot_impl = found
-            .as_ref()
-            .filter(|f| f.via != "Etherscan")
-            .map(|f| f.address.clone());
-
-        let impl_addr = match slot_impl {
-            Some(addr) => addr,
-            None => {
-                // Etherscan-flagged or unknown — a diamond would have many facets,
-                // so following a single "implementation" would be misleading.
-                if let Some(d) = crate::diamond::resolve_facets(&reader, address).await? {
-                    eprintln!(
-                        "{}",
-                        format!(
-                            "{address} is a multi-facet proxy (diamond) with {} facets — \
-                             run: scanevm contract facets {address} --save <dir>",
-                            d.facets.len()
-                        )
-                        .yellow()
-                    );
-                    return Ok(());
-                }
-                match found {
-                    Some(f) => f.address,
-                    None => {
-                        return Err(ScanevmError::ApiError(format!(
-                            "{address} does not appear to be a proxy (no implementation found)"
-                        )));
-                    }
-                }
-            }
-        };
-        eprintln!(
-            "{}",
-            format!("→ following proxy {address} to implementation {impl_addr}").dimmed()
-        );
-        target = impl_addr;
+        match follow_impl_of(&reader, &fetcher, address, "--save <dir>").await? {
+            Some(imp) => target = imp,
+            None => return Ok(()),
+        }
     }
 
     let report = fetcher.fetch(&target).await;
@@ -410,19 +422,9 @@ async fn run_abi(
 
     let mut target = address.to_string();
     if follow_impl {
-        match crate::proxy::resolve_implementation(&reader, es.as_ref(), address).await? {
-            Some(found) => {
-                eprintln!(
-                    "{}",
-                    format!("→ proxy {address} implementation {}", found.address).dimmed()
-                );
-                target = found.address;
-            }
-            None => {
-                return Err(ScanevmError::ApiError(format!(
-                    "{address} does not appear to be a proxy (no implementation found)"
-                )));
-            }
+        match follow_impl_of(&reader, &fetcher, address, "--abi").await? {
+            Some(imp) => target = imp,
+            None => return Ok(()),
         }
     }
 
@@ -490,67 +492,67 @@ async fn run_impl(
     let chain = resolve_chain(chain_name)?;
     let es = etherscan_client(cfg, &chain);
     let reader = Reader::new(chain, es.as_ref(), cfg.no_cache);
+    let fetcher = Fetcher::new(chain, &reader, es.as_ref(), cfg.no_cache);
     let use_json = use_json_flag || cfg.default_output == OutputFormat::Json;
 
-    let found = crate::proxy::resolve_implementation(&reader, es.as_ref(), address).await?;
-
-    // A storage-slot hit is an unambiguous single-implementation proxy.
-    if let Some(f) = &found {
-        if f.via != "Etherscan" {
-            return print_impl(address, f, chain.name, use_json);
-        }
+    let r = crate::proxy::resolve(&reader, Some(&fetcher), address).await?;
+    if use_json {
+        print_json(&resolve_json(&r, &chain, address));
+    } else if r.kind != Kind::None {
+        print_resolution(address, &r, &chain);
     }
-
-    // Otherwise it might be a diamond — a single "implementation" would mislead.
-    if let Some(d) = crate::diamond::resolve_facets(&reader, address).await? {
-        let n = d.facets.len();
+    if r.is_multi_facet() {
         eprintln!(
             "{}",
-            format!("{address} is a multi-facet proxy (diamond) with {n} facets — run: scanevm contract facets {address}")
+            format!("{address} has several facets — run: scanevm contract facets {address}")
                 .yellow()
         );
-        if use_json {
-            print_json(&serde_json::json!({
-                "address": address,
-                "type": "diamond",
-                "facet_count": n,
-                "chain": chain.name,
-            }));
-        }
-        return Ok(());
     }
-
-    match found {
-        Some(f) => print_impl(address, &f, chain.name, use_json),
-        None => Err(ScanevmError::ApiError(format!(
-            "{address} does not appear to be a proxy \
-             (no implementation found via EIP-1967/1822/beacon, diamond, or Etherscan)"
-        ))),
-    }
-}
-
-fn print_impl(
-    address: &str,
-    found: &crate::proxy::Implementation,
-    chain_name: &str,
-    use_json: bool,
-) -> Result<()> {
-    if use_json {
-        print_json(&serde_json::json!({
-            "proxy": address,
-            "implementation": found.address,
-            "via": found.via,
-            "chain": chain_name,
-        }));
-    } else {
-        print_kv_table(&[
-            ("Proxy", address.to_string()),
-            ("Implementation", found.address.clone()),
-            ("Detected via", found.via.to_string()),
-            ("Chain", chain_name.to_string()),
-        ]);
+    if r.kind == Kind::None {
+        return Err(not_a_proxy(address, &r));
     }
     Ok(())
+}
+
+fn print_resolution(address: &str, r: &Resolution, chain: &ChainInfo) {
+    let mut rows: Vec<(&str, String)> = vec![("Proxy", checksum(address))];
+    let kind = match r.variant {
+        Some(v) => format!("{} ({v})", r.kind.label()),
+        None => r.kind.label().to_string(),
+    };
+    rows.push(("Kind", kind));
+    if let Some(i) = &r.implementation {
+        rows.push(("Implementation", i.clone()));
+    }
+    if let Some(b) = &r.beacon {
+        rows.push(("Beacon", b.clone()));
+    }
+    if let Some(a) = &r.admin {
+        rows.push(("Admin", a.clone()));
+    }
+    if let Some(f) = &r.facets {
+        rows.push((
+            "Facets",
+            format!("{} (via {})", f.facets.len(), f.source.label()),
+        ));
+    }
+    if let Some(p) = r.hint_from {
+        rows.push(("Reported by", p.as_str().to_string()));
+    }
+    rows.push((
+        "Confidence",
+        if r.high_confidence { "high" } else { "low" }.to_string(),
+    ));
+    rows.push(("Chain", chain.name.to_string()));
+    print_kv_table(&rows);
+}
+
+/// `contract facets --json`: the scan core's follow report.
+#[derive(serde::Serialize)]
+struct FollowJson<'a> {
+    root: ReportJson<'a>,
+    resolution: ResolveJson,
+    implementations: Vec<ReportJson<'a>>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -568,96 +570,106 @@ async fn run_facets(
     let reader = Reader::new(chain, es.as_ref(), cfg.no_cache);
     let fetcher = Fetcher::new(chain, &reader, es.as_ref(), cfg.no_cache);
 
-    let diamond = crate::diamond::resolve_facets(&reader, address)
-        .await?
-        .ok_or_else(|| {
-            ScanevmError::ApiError(format!(
+    let r = crate::proxy::resolve(&reader, None, address).await?;
+    let diamond = match r.facets.clone().filter(|f| !f.facets.is_empty()) {
+        Some(d) => d,
+        None => {
+            let hint = if r.implementation.is_some() {
+                format!(
+                    "; it is a {} proxy — run: scanevm contract source {address} --impl",
+                    r.kind.label()
+                )
+            } else {
+                String::new()
+            };
+            return Err(ScanevmError::ApiError(format!(
                 "{address} is not a recognized diamond / multi-facet proxy \
-                 (no facets found via DiamondLoupe, DiamondCut, or SelectorToFacetSet logs)"
-            ))
-        })?;
-
-    let source_label = match diamond.source {
-        crate::diamond::Source::Loupe => "DiamondLoupe facets()",
-        crate::diamond::Source::LoupeAddressesOnly => "DiamondLoupe facetAddresses()",
-        crate::diamond::Source::DiamondCutLogs => "DiamondCut event logs",
-        crate::diamond::Source::SelectorEventLogs => "SelectorToFacetSet event logs",
+                 (no facets via DiamondLoupe, DiamondCut or SelectorToFacetSet logs){hint}"
+            )));
+        }
     };
 
     if let Some(dir) = save_dir {
         return save_facet_sources(&fetcher, &diamond, dir, flatten).await;
     }
-
     if with_abi {
         return merge_facet_abis(&fetcher, &diamond).await;
     }
 
-    // Look up each facet's verified name for a friendlier listing.
-    let named: Vec<(String, String, usize)> = diamond
+    let use_json = use_json_flag || cfg.default_output == OutputFormat::Json;
+    let reports = fetch_facets(&fetcher, &diamond).await;
+    if use_json {
+        let root = fetcher.fetch(address).await;
+        print_json(&FollowJson {
+            root: report_json(&root),
+            resolution: resolve_json(&r, &chain, address),
+            implementations: reports.iter().map(report_json).collect(),
+        });
+        return Ok(());
+    }
+
+    #[derive(tabled::Tabled)]
+    struct FacetRow {
+        #[tabled(rename = "Facet")]
+        address: String,
+        #[tabled(rename = "Name")]
+        name: String,
+        #[tabled(rename = "Selectors")]
+        selectors: String,
+        #[tabled(rename = "Source")]
+        source: String,
+    }
+    let rows: Vec<FacetRow> = diamond
         .facets
         .iter()
-        .zip(fetch_facets(&fetcher, &diamond).await)
-        .map(|(facet, src)| {
-            let name = src
-                .ok()
-                .map(|s| s.fetched.name)
-                .filter(|n| !n.is_empty())
-                .unwrap_or_else(|| "(unverified)".to_string());
-            (facet.address.clone(), name, facet.selectors.len())
-        })
-        .collect();
-
-    let use_json = use_json_flag || cfg.default_output == OutputFormat::Json;
-    if use_json {
-        print_json(&serde_json::json!({
-            "diamond": address,
-            "source": source_label,
-            "truncated": diamond.truncated,
-            "facet_count": diamond.facets.len(),
-            "facets": diamond.facets.iter().zip(&named).map(|(f, n)| serde_json::json!({
-                "address": f.address,
-                "name": n.1,
-                "selectors": f.selectors,
-            })).collect::<Vec<_>>(),
-            "chain": chain.name,
-        }));
-    } else {
-        #[derive(tabled::Tabled)]
-        struct FacetRow {
-            #[tabled(rename = "Facet")]
-            address: String,
-            #[tabled(rename = "Name")]
-            name: String,
-            #[tabled(rename = "Selectors")]
-            selectors: String,
-        }
-        let rows: Vec<FacetRow> = named
-            .into_iter()
-            .map(|(address, name, count)| FacetRow {
-                address,
+        .zip(&reports)
+        .map(|(facet, rep)| {
+            let (name, source) = match &rep.source {
+                Some(s) if !s.fetched.name.is_empty() => (
+                    s.fetched.name.clone(),
+                    format!(
+                        "{} ({})",
+                        s.fetched.provider.as_str(),
+                        s.fetched.quality.as_str()
+                    ),
+                ),
+                Some(s) => ("?".to_string(), s.fetched.provider.as_str().to_string()),
+                None => (
+                    "(unverified)".to_string(),
+                    rep.error
+                        .as_ref()
+                        .map(|e| e.kind.clone())
+                        .unwrap_or_default(),
+                ),
+            };
+            FacetRow {
+                address: checksum(&facet.address),
                 name,
-                selectors: if count == 0 {
+                selectors: if facet.selectors.is_empty() {
                     "?".to_string()
                 } else {
-                    count.to_string()
+                    facet.selectors.len().to_string()
                 },
-            })
-            .collect();
-        crate::output::print_table(rows);
-        eprintln!(
-            "{}",
-            format!(
-                "{} facets via {source_label}{}",
-                diamond.facets.len(),
-                if diamond.truncated {
-                    " (truncated: event logs ran past the page limit)"
-                } else {
-                    ""
-                }
-            )
-            .dimmed()
-        );
-    }
+                source,
+            }
+        })
+        .collect();
+    crate::output::print_table(rows);
+    eprintln!(
+        "{}",
+        format!(
+            "{} facets of a {} via {}{}",
+            diamond.facets.len(),
+            r.kind.label(),
+            diamond.source.label(),
+            if diamond.truncated {
+                " (truncated: event logs ran past the page limit)"
+            } else {
+                ""
+            }
+        )
+        .dimmed()
+    );
     Ok(())
 }
 
@@ -670,7 +682,7 @@ async fn merge_facet_abis(fetcher: &Fetcher<'_>, diamond: &crate::diamond::Facet
         .iter()
         .zip(fetch_facets(fetcher, diamond).await)
     {
-        let abi = match src.and_then(|s| abi_of(&s, &facet.address)) {
+        let abi = match src.into_source().and_then(|s| abi_of(&s, &facet.address)) {
             Ok(a) => a,
             Err(_) => {
                 skipped += 1;
@@ -714,7 +726,7 @@ async fn save_facet_sources(
         .iter()
         .zip(fetch_facets(fetcher, diamond).await)
     {
-        let stored = match src {
+        let stored = match src.into_source() {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("{}", format!("skipped {} ({e})", facet.address).dimmed());

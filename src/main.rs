@@ -10,7 +10,6 @@ mod output;
 mod proxy;
 mod rpc;
 mod sources;
-mod types;
 mod util;
 
 use clap::{Parser, Subcommand};

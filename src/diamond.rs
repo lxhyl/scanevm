@@ -1,18 +1,17 @@
-//! EIP-2535 Diamond facet enumeration.
+//! Facet sets of diamonds and selector routers.
 //!
-//! A diamond has no single implementation — it routes each function selector to
-//! one of many *facets*. We resolve the current facet set four ways, in order:
-//!   1. `facets()` DiamondLoupe call (facet address + its selectors).
-//!   2. `facetAddresses()` DiamondLoupe call (addresses only).
-//!   3. Replay of standard EIP-2535 `DiamondCut` event logs (loupe-less diamonds).
-//!   4. Replay of `SelectorToFacetSet` event logs — Pendle-style custom selector
-//!      routers (OZ `Proxy` + a `selectorToFacet` mapping) that expose neither
-//!      the loupe nor `DiamondCut`.
+//! A diamond has no single implementation: it routes each function selector to
+//! one of many *facets*. [`crate::proxy`] asks here in two steps, gated on the
+//! bytecode as the scan core does:
+//!   - [`loupe`]: the EIP-2535 DiamondLoupe `facets()` (addresses + selectors),
+//!     else `facetAddresses()` (addresses only);
+//!   - [`replay`]: event replay for routers without a loupe — Pendle-style
+//!     `SelectorToFacetSet` first, then standard `DiamondCut`.
 
 use std::collections::BTreeMap;
 
 use crate::error::Result;
-use crate::rpc::{from_hex, Log, Reader};
+use crate::rpc::{from_hex, Reader};
 
 /// `facets()`
 const SEL_FACETS: &str = "0x7a0ed627";
@@ -29,6 +28,7 @@ const SELECTOR_TO_FACET_TOPIC: &str =
 
 #[derive(Debug, Clone)]
 pub struct Facet {
+    /// Lowercase `0x` address.
     pub address: String,
     /// 4-byte selectors routed to this facet (may be empty if unknown).
     pub selectors: Vec<String>,
@@ -43,6 +43,18 @@ pub enum Source {
     SelectorEventLogs,
 }
 
+impl Source {
+    pub fn label(self) -> &'static str {
+        match self {
+            Source::Loupe => "DiamondLoupe facets()",
+            Source::LoupeAddressesOnly => "DiamondLoupe facetAddresses()",
+            Source::DiamondCutLogs => "DiamondCut event logs",
+            Source::SelectorEventLogs => "SelectorToFacetSet event logs",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Facets {
     pub facets: Vec<Facet>,
     pub source: Source,
@@ -50,57 +62,52 @@ pub struct Facets {
     pub truncated: bool,
 }
 
-/// Try every mechanism in turn. Returns `None` if the address is not a diamond
-/// / no facets could be enumerated.
-pub async fn resolve_facets(reader: &Reader<'_>, address: &str) -> Result<Option<Facets>> {
-    // 1. facets() — gives addresses and their selectors.
+/// The DiamondLoupe: `facets()`, else `facetAddresses()`. `None` when neither
+/// answers with a non-empty set (a revert counts as no answer).
+pub async fn loupe(reader: &Reader<'_>, address: &str) -> Option<Facets> {
     if let Some(data) = eth_call(reader, address, SEL_FACETS).await {
-        if let Some(facets) = decode_facets(&data) {
-            if !facets.is_empty() {
-                return Ok(Some(Facets {
-                    facets,
-                    source: Source::Loupe,
-                    truncated: false,
-                }));
-            }
+        if let Some(facets) = decode_facets(&data).filter(|f| !f.is_empty()) {
+            return Some(Facets {
+                facets,
+                source: Source::Loupe,
+                truncated: false,
+            });
         }
     }
-    // 2. facetAddresses() — addresses only.
-    if let Some(data) = eth_call(reader, address, SEL_FACET_ADDRESSES).await {
-        if let Some(addrs) = decode_address_array(&data) {
-            if !addrs.is_empty() {
-                return Ok(Some(Facets {
-                    facets: addrs
-                        .into_iter()
-                        .map(|address| Facet {
-                            address,
-                            selectors: vec![],
-                        })
-                        .collect(),
-                    source: Source::LoupeAddressesOnly,
-                    truncated: false,
-                }));
-            }
-        }
-    }
-    // 3. Standard DiamondCut event-log replay (loupe-less EIP-2535 diamonds).
-    if let Some(f) = facets_from_diamond_cut(reader, address).await {
+    let data = eth_call(reader, address, SEL_FACET_ADDRESSES).await?;
+    let addrs = decode_address_array(&data).filter(|a| !a.is_empty())?;
+    Some(Facets {
+        facets: addrs
+            .into_iter()
+            .map(|address| Facet {
+                address,
+                selectors: vec![],
+            })
+            .collect(),
+        source: Source::LoupeAddressesOnly,
+        truncated: false,
+    })
+}
+
+/// Event replay for loupe-less routers. An `Err` means the logs couldn't be
+/// read (not "no logs"), so the caller can say so.
+pub async fn replay(reader: &Reader<'_>, address: &str) -> Result<Option<Facets>> {
+    if let Some(f) = facets_from_selector_events(reader, address).await? {
         return Ok(Some(f));
     }
-    // 4. Pendle-style SelectorToFacetSet event replay (custom selector routers).
-    Ok(facets_from_selector_events(reader, address).await)
+    facets_from_diamond_cut(reader, address).await
 }
 
 /// Reconstruct the facet set by replaying standard EIP-2535 `DiamondCut` events.
-async fn facets_from_diamond_cut(reader: &Reader<'_>, address: &str) -> Option<Facets> {
-    let (logs, truncated) = fetch_all_logs(reader, address, DIAMOND_CUT_TOPIC).await;
-    if logs.is_empty() {
-        return None;
+async fn facets_from_diamond_cut(reader: &Reader<'_>, address: &str) -> Result<Option<Facets>> {
+    let l = reader.logs(address, DIAMOND_CUT_TOPIC).await?;
+    if l.logs.is_empty() {
+        return Ok(None);
     }
 
     // selector -> facet address (last writer wins; Remove deletes).
     let mut routes: BTreeMap<String, String> = BTreeMap::new();
-    for log in &logs {
+    for log in &l.logs {
         let Some(bytes) = from_hex(&log.data) else {
             continue;
         };
@@ -121,19 +128,19 @@ async fn facets_from_diamond_cut(reader: &Reader<'_>, address: &str) -> Option<F
             }
         }
     }
-    group_routes(routes, Source::DiamondCutLogs, truncated)
+    Ok(group_routes(routes, Source::DiamondCutLogs, l.truncated))
 }
 
 /// Reconstruct the facet set for Pendle-style routers that emit
 /// `SelectorToFacetSet(bytes4 indexed selector, address indexed facet)`.
-async fn facets_from_selector_events(reader: &Reader<'_>, address: &str) -> Option<Facets> {
-    let (logs, truncated) = fetch_all_logs(reader, address, SELECTOR_TO_FACET_TOPIC).await;
-    if logs.is_empty() {
-        return None;
+async fn facets_from_selector_events(reader: &Reader<'_>, address: &str) -> Result<Option<Facets>> {
+    let l = reader.logs(address, SELECTOR_TO_FACET_TOPIC).await?;
+    if l.logs.is_empty() {
+        return Ok(None);
     }
 
     let mut routes: BTreeMap<String, String> = BTreeMap::new();
-    for log in &logs {
+    for log in &l.logs {
         // Both args are indexed: topics = [topic0, selector, facet].
         if log.topics.len() < 3 {
             continue;
@@ -153,7 +160,7 @@ async fn facets_from_selector_events(reader: &Reader<'_>, address: &str) -> Opti
             routes.insert(sel.to_string(), format!("0x{}", facet.to_ascii_lowercase()));
         }
     }
-    group_routes(routes, Source::SelectorEventLogs, truncated)
+    Ok(group_routes(routes, Source::SelectorEventLogs, l.truncated))
 }
 
 /// Group a selector→facet map into per-facet facets, or `None` if empty.
@@ -178,15 +185,6 @@ fn group_routes(
         source,
         truncated,
     })
-}
-
-/// All logs for `address` matching `topic0`, oldest first, and whether the
-/// list may be cut short. A failed read counts as no logs (not a diamond).
-async fn fetch_all_logs(reader: &Reader<'_>, address: &str, topic0: &str) -> (Vec<Log>, bool) {
-    match reader.logs(address, topic0).await {
-        Ok(l) => (l.logs, l.truncated),
-        Err(_) => (Vec::new(), false),
-    }
 }
 
 async fn eth_call(reader: &Reader<'_>, to: &str, data: &str) -> Option<Vec<u8>> {
