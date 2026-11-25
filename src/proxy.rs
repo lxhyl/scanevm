@@ -34,7 +34,7 @@ pub struct Implementation {
 /// found, or `None` if the address does not look like a proxy.
 pub async fn resolve_implementation(
     reader: &Reader<'_>,
-    client: &EtherscanClient,
+    client: Option<&EtherscanClient>,
     address: &str,
 ) -> Result<Option<Implementation>> {
     // 1. EIP-1967 implementation slot (the common case).
@@ -70,6 +70,9 @@ pub async fn resolve_implementation(
     // 5. Etherscan's own proxy metadata, as a last resort. This reads the
     // upgradeable implementation pointer, so it must not be cached permanently —
     // `source_cache_policy` returns `Skip` for proxies, keeping it fresh.
+    let Some(client) = client else {
+        return Ok(None);
+    };
     if let Ok(sources) = client
         .call_cached_with::<Vec<ContractSource>, _>(
             &[

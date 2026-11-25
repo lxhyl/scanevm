@@ -14,7 +14,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Breaking:** the chains `moonbeam` (1284), `holesky` (17000) and `scroll-sepolia`
   (534351) are gone: Etherscan v2 no longer serves them and no other provider does.
 
+### Added
+- **Source from four providers, no key needed.** Sourcify, Etherscan, Blockscout and
+  Routescan are asked in each chain's order, and the best match wins (Sourcify exact >
+  Etherscan > Sourcify partial > Blockscout > Routescan); the fetch stops as soon as no
+  later provider could do better. A provider that fails (rate limit, network) is
+  recorded and the next one is asked. Without an Etherscan key, Etherscan is skipped
+  and everything else works; with one, it joins as a source. Ported from the scan core.
+- `contract abi` works with every provider (each returns the ABI with the source).
+- The runtime code is read first: an EOA is "no contract code" (exit code 7, back with
+  a new meaning), an EIP-7702 account names its delegate, and the codehash keys the
+  local source cache.
+- `contract facets` fetches facets four at a time (a 43-facet diamond lists in under a
+  minute cold, instead of three).
+
 ### Changed
+- **Breaking:** `contract source --json` prints the scan core's report:
+  `{target, chain_id, address, status, code, source: {meta}, attempts, error}`, where
+  `meta` has the name, language, compiler, `provider`, `match`, `providers_tried`,
+  `proxy_hint`, `deployment`, `license` and `files` (`path`, `file`, `bytes`, `main`).
+  `file` is where `--save` writes it. The report is printed for unverified contracts
+  too, and the exit code still says what happened.
+- `--save` maps unsafe source paths to safe ones (`..` becomes `__`, absolute paths
+  become relative) instead of refusing them.
+- No API key configured is no longer an error.
 - The chain table now records, per chain, which verified-source providers to ask and
   in what order, a Blockscout instance and Routescan network where there is one, and
   public RPC endpoints. Seven chains are new: hyperevm, sonic, mantle, berachain,

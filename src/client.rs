@@ -58,9 +58,9 @@ struct ApiEnvelope {
 }
 
 impl EtherscanClient {
-    /// Build a client over a pool of one or more API keys. Callers obtain the
-    /// pool from [`crate::config::Config::require_keys`], which guarantees it is
-    /// non-empty; an empty pool would make every request fail. `no_cache`
+    /// Build a client over a pool of one or more API keys ([`crate::config::Config::keys`]).
+    /// Callers only build one when the pool is non-empty; an empty pool would
+    /// make every request fail. `no_cache`
     /// (the `--no-cache` flag) disables the local response cache for this run.
     pub fn new(keys: Vec<String>, chain_id: u64, no_cache: bool) -> Self {
         let http = reqwest::Client::builder()
@@ -87,28 +87,7 @@ impl EtherscanClient {
         parse_envelope(&body)
     }
 
-    /// Like [`call`](Self::call), but reads/writes a local cache with the given
-    /// TTL (`None` = cache permanently). The key is derived from the chain id
-    /// and request params, so different addresses/actions never collide.
-    pub async fn call_cached<T: DeserializeOwned + Serialize>(
-        &self,
-        ttl: Option<Duration>,
-        params: &[(&str, &str)],
-    ) -> Result<T> {
-        let key = call_key(self.chain_id, params);
-        if let Some(raw) = self.cache.get(&key) {
-            if let Ok(value) = serde_json::from_str::<T>(&raw) {
-                return Ok(value);
-            }
-        }
-        let value: T = self.call(params).await?;
-        if let Ok(serialized) = serde_json::to_string(&value) {
-            self.cache.put(&key, &serialized, ttl);
-        }
-        Ok(value)
-    }
-
-    /// Like [`call_cached`](Self::call_cached), but the cache lifetime is chosen
+    /// Like [`call`](Self::call), but reads/writes a local cache whose lifetime is chosen
     /// from the fetched value via `policy`, so a single endpoint can be cached
     /// permanently for immutable results yet re-fetched for upgradeable ones.
     ///
@@ -366,7 +345,7 @@ fn is_rate_limited_body(body: &str) -> bool {
     hay.contains("rate limit") || hay.contains("max calls") || hay.contains("too many")
 }
 
-fn retry_after_secs(resp: &reqwest::Response) -> Option<u64> {
+pub(crate) fn retry_after_secs(resp: &reqwest::Response) -> Option<u64> {
     resp.headers()
         .get(reqwest::header::RETRY_AFTER)?
         .to_str()
@@ -376,7 +355,7 @@ fn retry_after_secs(resp: &reqwest::Response) -> Option<u64> {
         .ok()
 }
 
-fn backoff_delay(attempt: u32, retry_after: Option<u64>) -> Duration {
+pub(crate) fn backoff_delay(attempt: u32, retry_after: Option<u64>) -> Duration {
     if let Some(secs) = retry_after {
         return Duration::from_secs(secs.min(30));
     }

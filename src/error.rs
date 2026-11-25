@@ -5,12 +5,9 @@ pub type Result<T> = std::result::Result<T, ScanevmError>;
 /// All errors surfaced to the user. Each variant maps to a distinct process
 /// exit code (see [`ScanevmError::exit_code`]) so scripts and agents can branch
 /// on the failure class — e.g. back off and retry on `RateLimited` (4) but give
-/// up on `ApiKeyMissing` (2).
+/// up on `UnknownChain` (2).
 #[derive(Debug, Error)]
 pub enum ScanevmError {
-    #[error("No API key configured. Run: scanevm config set-key <KEY>")]
-    ApiKeyMissing,
-
     #[error("Invalid API key. Check the key, or set a new one: scanevm config set-key <KEY>")]
     InvalidApiKey,
 
@@ -25,6 +22,9 @@ pub enum ScanevmError {
         None => "Rate limit reached. Slow down requests, or use an API Pro plan.".to_string(),
     })]
     RateLimited { retry_after: Option<u64> },
+
+    #[error("Not found: {0}")]
+    NotFound(String),
 
     #[error("Contract source code is not verified for {0}")]
     NotVerified(String),
@@ -50,22 +50,24 @@ impl ScanevmError {
     ///
     /// | code | meaning                                               |
     /// |------|-------------------------------------------------------|
-    /// | 2    | usage/config (missing key, unknown chain, bad input)  |
+    /// | 2    | usage/config (unknown chain, bad input)               |
     /// | 3    | network/transport failure                             |
     /// | 4    | rate limited (retryable)                              |
     /// | 5    | invalid API key (auth)                                |
     /// | 6    | other upstream API error                              |
+    /// | 7    | not found (no contract code at the address)           |
     /// | 8    | contract source not verified                          |
     /// | 9    | local I/O error                                       |
     /// | 70   | internal data/decoding error                          |
     pub fn exit_code(&self) -> i32 {
         use ScanevmError::*;
         match self {
-            ApiKeyMissing | UnknownChain(_) | BadInput(_) | Config(_) => 2,
+            UnknownChain(_) | BadInput(_) | Config(_) => 2,
             Network(_) => 3,
             RateLimited { .. } => 4,
             InvalidApiKey => 5,
             ApiError(_) => 6,
+            NotFound(_) => 7,
             NotVerified(_) => 8,
             Io(_) => 9,
             Json(_) => 70,
@@ -99,7 +101,6 @@ mod tests {
 
     #[test]
     fn exit_codes_are_distinct_per_class() {
-        assert_eq!(ScanevmError::ApiKeyMissing.exit_code(), 2);
         assert_eq!(ScanevmError::UnknownChain("x".into()).exit_code(), 2);
         assert_eq!(ScanevmError::BadInput("x".into()).exit_code(), 2);
         assert_eq!(ScanevmError::Network("x".into()).exit_code(), 3);
@@ -109,6 +110,7 @@ mod tests {
         );
         assert_eq!(ScanevmError::InvalidApiKey.exit_code(), 5);
         assert_eq!(ScanevmError::ApiError("x".into()).exit_code(), 6);
+        assert_eq!(ScanevmError::NotFound("x".into()).exit_code(), 7);
         assert_eq!(ScanevmError::NotVerified("x".into()).exit_code(), 8);
     }
 

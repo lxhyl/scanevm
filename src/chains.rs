@@ -13,12 +13,12 @@
 //! API clients and are left out. Not reachable from the checking machine, so
 //! unconfirmed: the blast and blast-sepolia RPCs.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, ScanevmError};
 
 /// A verified-source provider.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Provider {
     Sourcify,

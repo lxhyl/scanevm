@@ -152,16 +152,6 @@ impl Config {
         }
         dedup_keys(all.into_iter().filter(|k| !k.trim().is_empty()).collect())
     }
-
-    /// The key pool, or [`ScanevmError::ApiKeyMissing`] if it is empty.
-    pub fn require_keys(&self) -> Result<Vec<String>> {
-        let keys = self.keys();
-        if keys.is_empty() {
-            Err(ScanevmError::ApiKeyMissing)
-        } else {
-            Ok(keys)
-        }
-    }
 }
 
 /// Split a raw string into individual keys on commas/whitespace/semicolons,
@@ -192,9 +182,9 @@ mod tests {
     }
 
     #[test]
-    fn require_keys_missing() {
-        let cfg = Config::default();
-        assert!(cfg.require_keys().is_err());
+    fn no_keys_is_an_empty_pool() {
+        // No key is fine: the keyless providers and public RPCs are used.
+        assert!(Config::default().keys().is_empty());
     }
 
     #[test]
@@ -203,7 +193,7 @@ mod tests {
             api_key: Some("legacy".into()),
             ..Default::default()
         };
-        assert_eq!(cfg.require_keys().unwrap(), vec!["legacy".to_string()]);
+        assert_eq!(cfg.keys(), vec!["legacy".to_string()]);
     }
 
     #[test]

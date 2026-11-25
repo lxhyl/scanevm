@@ -5,10 +5,13 @@ mod commands;
 mod config;
 mod diamond;
 mod error;
+mod fetch;
 mod output;
 mod proxy;
 mod rpc;
+mod sources;
 mod types;
+mod util;
 
 use clap::{Parser, Subcommand};
 use colored::Colorize;
@@ -39,17 +42,19 @@ struct Cli {
 const EXIT_CODES_HELP: &str = "\
 Exit codes:
   0  success
-  2  usage / config error (missing key, unknown chain, bad input)
+  2  usage / config error (unknown chain, bad input)
   3  network error
   4  rate limited (retryable)
   5  invalid API key
   6  API error
+  7  not found (no contract code at the address)
   8  contract source not verified
 
-Most commands accept --json. Configure multiple API keys (config set-key K1 K2 ...)
-to pool past the 5 req/s per-key limit. Verified non-proxy source is cached
-permanently; proxy (upgradeable) contracts are always fetched fresh. Pass
---no-cache to skip the cache entirely for one run.
+Source comes from Sourcify, Etherscan, Blockscout and Routescan, in each chain's
+order (see `scanevm chains`). No key is needed: an Etherscan key (config set-key K1
+K2 ...) adds Etherscan as a source and as a fallback for chain reads. Verified
+non-proxy source is cached permanently; proxy (upgradeable) contracts are always
+fetched fresh. Pass --no-cache to skip the cache entirely for one run.
 Env: ETHERSCAN_API_KEYS (comma-separated pool), ETHERSCAN_API_KEY, SCANEVM_NO_CACHE=1.";
 
 #[derive(Debug, Subcommand)]
@@ -58,7 +63,7 @@ enum Commands {
     Contract(ContractArgs),
     /// List supported chains
     Chains(ChainsArgs),
-    /// Configure API key and defaults
+    /// Configure the optional Etherscan API key(s) and defaults
     Config(ConfigArgs),
 }
 

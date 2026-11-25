@@ -1,10 +1,12 @@
-use crate::chains::resolve_chain;
+use crate::chains::{resolve_chain, ChainInfo};
 use crate::client::EtherscanClient;
 use crate::config::{Config, OutputFormat};
 use crate::error::{Result, ScanevmError};
+use crate::fetch::{disk_paths, report_json, Fetcher, Stored};
 use crate::output::{print_json, print_kv_table};
 use crate::rpc::Reader;
-use crate::types::ContractSource;
+use crate::sources::lang_ext;
+use crate::util::{run_limited, sanitize_rel_path, to_hex};
 use clap::{Args, Subcommand};
 use colored::Colorize;
 use std::path::{Component, Path, PathBuf};
@@ -153,21 +155,26 @@ pub async fn run(args: &ContractArgs, cfg: &Config) -> Result<()> {
     }
 }
 
-async fn fetch_source(client: &EtherscanClient, address: &str) -> Result<ContractSource> {
-    // Verified non-proxy source is immutable → cache forever; proxies are
-    // upgradeable and unverified contracts can still get verified → always
-    // re-fetch (see `source_cache_policy`).
-    let sources: Vec<ContractSource> = client
-        .call_cached_with(
-            &[
-                ("module", "contract"),
-                ("action", "getsourcecode"),
-                ("address", address),
-            ],
-            |s: &Vec<ContractSource>| crate::types::source_cache_policy(s.first()),
-        )
-        .await?;
-    Ok(sources.into_iter().next().unwrap_or_default())
+/// Facets fetched at once (as the scan core does).
+const FACET_CONCURRENCY: usize = 4;
+
+/// Fetch every facet's source, `FACET_CONCURRENCY` at a time, in facet order.
+async fn fetch_facets(
+    fetcher: &Fetcher<'_>,
+    diamond: &crate::diamond::Facets,
+) -> Vec<Result<Stored>> {
+    let addrs: Vec<String> = diamond.facets.iter().map(|f| f.address.clone()).collect();
+    run_limited(addrs, FACET_CONCURRENCY, |a| async move {
+        fetcher.fetch(&a).await.into_source()
+    })
+    .await
+}
+
+/// The user's Etherscan client, when a key is configured. Without one,
+/// scanevm uses the keyless providers and public RPCs.
+fn etherscan_client(cfg: &Config, chain: &ChainInfo) -> Option<EtherscanClient> {
+    let keys = cfg.keys();
+    (!keys.is_empty()).then(|| EtherscanClient::new(keys, chain.chain_id, cfg.no_cache))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -181,17 +188,16 @@ async fn run_source(
     use_json_flag: bool,
     cfg: &Config,
 ) -> Result<()> {
-    let keys = cfg.require_keys()?;
     let chain = resolve_chain(chain_name)?;
-    let client = EtherscanClient::new(keys, chain.chain_id, cfg.no_cache);
-    let reader = Reader::new(chain, Some(&client), cfg.no_cache);
+    let es = etherscan_client(cfg, &chain);
+    let reader = Reader::new(chain, es.as_ref(), cfg.no_cache);
+    let fetcher = Fetcher::new(chain, &reader, es.as_ref(), cfg.no_cache);
 
-    let mut source = fetch_source(&client, address).await?;
-    let mut display_address = address.to_string();
+    let mut target = address.to_string();
 
     // Follow a proxy to its implementation if asked.
     if follow_impl {
-        let found = crate::proxy::resolve_implementation(&reader, &client, address).await?;
+        let found = crate::proxy::resolve_implementation(&reader, es.as_ref(), address).await?;
         // A storage-slot hit is an unambiguous single-implementation proxy.
         let slot_impl = found
             .as_ref()
@@ -229,49 +235,52 @@ async fn run_source(
             "{}",
             format!("→ following proxy {address} to implementation {impl_addr}").dimmed()
         );
-        source = fetch_source(&client, &impl_addr).await?;
-        display_address = impl_addr;
+        target = impl_addr;
     }
 
-    // An unverified contract comes back with empty source/name — report it
-    // clearly (exit code 8) instead of printing a blank metadata table.
-    if source.source_code.is_empty() && source.contract_name.is_empty() {
-        return Err(ScanevmError::NotVerified(display_address));
-    }
-
+    let report = fetcher.fetch(&target).await;
     let use_json = use_json_flag || cfg.default_output == OutputFormat::Json;
 
     // Metadata mode: no --print, --save, or --flatten.
     if !do_print && save_dir.is_none() && !flatten {
         if use_json {
-            print_json(&source);
-        } else {
-            print_metadata(&source, chain.name);
+            // The report says what happened even without source; the exit code
+            // still tells not verified (8) / no code (7) / errors apart.
+            print_json(&report_json(&report));
+            return report.into_source().map(|_| ());
         }
+        let stored = report.into_source()?;
+        print_metadata(&stored, &chain);
         return Ok(());
     }
 
-    let files = parse_source_files(&source.source_code, &source.contract_name);
+    let stored = report.into_source()?;
+    let f = &stored.fetched;
 
     if flatten {
-        let flat = flatten_files(&files);
+        let flat = flatten_files(&f.sources);
         match save_dir {
             Some(dir) => {
-                let name = if source.contract_name.is_empty() {
+                let name = if f.name.is_empty() {
                     "Contract"
                 } else {
-                    &source.contract_name
+                    &f.name
                 };
-                save_file(dir, &format!("{name}.flat.sol"), &flat)?;
+                save_file(
+                    dir,
+                    &format!("{}.flat.{}", sanitize_rel_path(name), lang_ext(&f.language)),
+                    &flat,
+                )?;
             }
             None => print!("{flat}"),
         }
         return Ok(());
     }
 
-    for (path, content) in &files {
+    let disk = disk_paths(f);
+    for ((path, content), rel) in f.sources.iter().zip(&disk) {
         if let Some(dir) = save_dir {
-            save_file(dir, path, content)?;
+            save_file(dir, rel, content)?;
         }
         if do_print {
             println!("// === {path} ===");
@@ -282,40 +291,53 @@ async fn run_source(
     Ok(())
 }
 
-fn print_metadata(source: &ContractSource, chain_name: &str) {
-    let proxy_info = if source.proxy == "1" {
-        format!(
-            "Yes (impl: {})",
-            source.implementation.as_deref().unwrap_or("unknown")
-        )
+fn print_metadata(stored: &Stored, chain: &ChainInfo) {
+    let f = &stored.fetched;
+    let mut rows: Vec<(&str, String)> = vec![("Contract", f.name.clone())];
+    let compiler = if f.language == "solidity" || f.language == "unknown" {
+        f.compiler.version.clone()
     } else {
-        "No".to_string()
+        format!("{} ({})", f.compiler.version, f.language)
     };
-
-    let mut rows: Vec<(&str, String)> = vec![
-        ("Contract", source.contract_name.clone()),
-        ("Compiler", source.compiler_version.clone()),
-    ];
-    if !source.evm_version.is_empty() && source.evm_version != "Default" {
-        rows.push(("EVM Version", source.evm_version.clone()));
+    rows.push(("Compiler", compiler));
+    if let Some(evm) = &f.compiler.evm_version {
+        rows.push(("EVM Version", evm.clone()));
     }
-    rows.push((
-        "Optimization",
-        if source.optimization_used == "1" {
-            format!("Yes ({} runs)", source.runs)
-        } else {
-            "No".to_string()
-        },
-    ));
-    rows.push(("License", source.license_type.clone()));
-    rows.push(("Proxy", proxy_info));
-    if !source.constructor_arguments.is_empty() {
+    if let Some(o) = &f.compiler.optimizer {
         rows.push((
-            "Constructor Args",
-            truncate_hex(&source.constructor_arguments),
+            "Optimization",
+            match (o.enabled, o.runs) {
+                (true, Some(runs)) => format!("Yes ({runs} runs)"),
+                (true, None) => "Yes".to_string(),
+                (false, _) => "No".to_string(),
+            },
         ));
     }
-    rows.push(("Chain", chain_name.to_string()));
+    if let Some(l) = &f.license {
+        rows.push(("License", l.clone()));
+    }
+    if let Some(h) = &f.proxy_hint {
+        rows.push((
+            "Proxy",
+            if !h.is_proxy {
+                "No".to_string()
+            } else if h.implementations.is_empty() {
+                "Yes".to_string()
+            } else {
+                format!("Yes (impl: {})", h.implementations.join(", "))
+            },
+        ));
+    }
+    if let Some(args) = &f.constructor_args {
+        rows.push(("Constructor Args", truncate_hex(args)));
+    }
+    let source = match &f.similar_to {
+        Some(twin) => format!("{} (similar to {twin})", f.provider.as_str()),
+        None => format!("{} ({})", f.provider.as_str(), f.quality.as_str()),
+    };
+    rows.push(("Source", source));
+    rows.push(("Files", f.sources.len().to_string()));
+    rows.push(("Chain", chain.name.to_string()));
     print_kv_table(&rows);
 }
 
@@ -325,49 +347,6 @@ fn truncate_hex(s: &str) -> String {
     } else {
         format!("{}… ({} hex chars)", &s[..42], s.len())
     }
-}
-
-/// Parse the `SourceCode` field into `(path, content)` pairs.
-///
-/// Handles Etherscan's three shapes: a standard-JSON-input object wrapped in
-/// double braces (`{{ "language": .., "sources": { path: { content } } }}`),
-/// a bare double-brace map (`{{ path: { content } }}`), and a plain single
-/// Solidity file. Always returns at least one file.
-fn parse_source_files(raw: &str, contract_name: &str) -> Vec<(String, String)> {
-    if raw.starts_with("{{") && raw.ends_with("}}") {
-        // Strip one layer of braces to get valid JSON.
-        let inner = &raw[1..raw.len() - 1];
-        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(inner) {
-            let sources_map = parsed
-                .get("sources")
-                .cloned()
-                .unwrap_or_else(|| parsed.clone());
-            if let Some(map) = sources_map.as_object() {
-                let mut files: Vec<(String, String)> = map
-                    .iter()
-                    .map(|(path, obj)| {
-                        let content = obj
-                            .get("content")
-                            .and_then(|c| c.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        (path.clone(), content)
-                    })
-                    .collect();
-                files.sort_by(|a, b| a.0.cmp(&b.0));
-                if !files.is_empty() {
-                    return files;
-                }
-            }
-        }
-    }
-
-    let name = if contract_name.is_empty() {
-        "Contract"
-    } else {
-        contract_name
-    };
-    vec![(format!("{name}.sol"), raw.to_string())]
 }
 
 fn flatten_files(files: &[(String, String)]) -> String {
@@ -384,8 +363,8 @@ fn flatten_files(files: &[(String, String)]) -> String {
 }
 
 fn save_file(base_dir: &Path, relative_path: &str, content: &str) -> Result<()> {
-    // The relative path comes from the API response, so reject anything that
-    // would escape the target directory (absolute paths, `..`, drive prefixes).
+    // Paths are sanitized before they get here (see `util::sanitize_rel_path`);
+    // refuse anything that would still escape the target directory.
     let candidate = Path::new(relative_path);
     let safe = candidate
         .components()
@@ -405,6 +384,18 @@ fn save_file(base_dir: &Path, relative_path: &str, content: &str) -> Result<()> 
     Ok(())
 }
 
+/// The ABI of a fetched source set, compact JSON.
+fn abi_of(stored: &Stored, address: &str) -> Result<String> {
+    let f = &stored.fetched;
+    let abi = f.abi.as_ref().ok_or_else(|| {
+        ScanevmError::ApiError(format!(
+            "{} returned source but no ABI for {address}",
+            f.provider.as_str()
+        ))
+    })?;
+    Ok(serde_json::to_string(abi)?)
+}
+
 async fn run_abi(
     address: &str,
     chain_name: &str,
@@ -412,14 +403,14 @@ async fn run_abi(
     use_json_flag: bool,
     cfg: &Config,
 ) -> Result<()> {
-    let keys = cfg.require_keys()?;
     let chain = resolve_chain(chain_name)?;
-    let client = EtherscanClient::new(keys, chain.chain_id, cfg.no_cache);
-    let reader = Reader::new(chain, Some(&client), cfg.no_cache);
+    let es = etherscan_client(cfg, &chain);
+    let reader = Reader::new(chain, es.as_ref(), cfg.no_cache);
+    let fetcher = Fetcher::new(chain, &reader, es.as_ref(), cfg.no_cache);
 
     let mut target = address.to_string();
     if follow_impl {
-        match crate::proxy::resolve_implementation(&reader, &client, address).await? {
+        match crate::proxy::resolve_implementation(&reader, es.as_ref(), address).await? {
             Some(found) => {
                 eprintln!(
                     "{}",
@@ -435,21 +426,12 @@ async fn run_abi(
         }
     }
 
-    let abi: String = client
-        .call_cached(
-            None,
-            &[
-                ("module", "contract"),
-                ("action", "getabi"),
-                ("address", &target),
-            ],
-        )
-        .await
-        .map_err(|e| not_verified_if_applicable(e, &target))?;
+    let stored = fetcher.fetch(&target).await.into_source()?;
+    let abi = abi_of(&stored, &target)?;
 
     let use_json = use_json_flag || cfg.default_output == OutputFormat::Json;
     if use_json {
-        // The ABI is already a compact JSON string — emit it verbatim for piping.
+        // Compact JSON on one line, for piping.
         println!("{abi}");
     } else if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&abi) {
         println!("{}", serde_json::to_string_pretty(&parsed)?);
@@ -469,15 +451,6 @@ async fn run_abi(
     Ok(())
 }
 
-fn not_verified_if_applicable(e: ScanevmError, address: &str) -> ScanevmError {
-    match e {
-        ScanevmError::ApiError(msg) if msg.to_lowercase().contains("not verified") => {
-            ScanevmError::NotVerified(address.to_string())
-        }
-        other => other,
-    }
-}
-
 fn looks_like_proxy_abi(abi: &str) -> bool {
     // Common proxy entrypoints that signal "this is the proxy, not the logic".
     abi.contains("\"upgradeTo\"")
@@ -491,17 +464,13 @@ async fn run_bytecode(
     use_json_flag: bool,
     cfg: &Config,
 ) -> Result<()> {
-    let keys = cfg.require_keys()?;
     let chain = resolve_chain(chain_name)?;
-    let client = EtherscanClient::new(keys, chain.chain_id, cfg.no_cache);
-    let reader = Reader::new(chain, Some(&client), cfg.no_cache);
+    let es = etherscan_client(cfg, &chain);
+    let reader = Reader::new(chain, es.as_ref(), cfg.no_cache);
 
     // Deployed bytecode is immutable; the reader caches it for good.
     let code = reader.code(address).await?;
-    let bytecode = format!(
-        "0x{}",
-        code.iter().map(|b| format!("{b:02x}")).collect::<String>()
-    );
+    let bytecode = format!("0x{}", to_hex(&code));
 
     let use_json = use_json_flag || cfg.default_output == OutputFormat::Json;
     if use_json {
@@ -518,13 +487,12 @@ async fn run_impl(
     use_json_flag: bool,
     cfg: &Config,
 ) -> Result<()> {
-    let keys = cfg.require_keys()?;
     let chain = resolve_chain(chain_name)?;
-    let client = EtherscanClient::new(keys, chain.chain_id, cfg.no_cache);
-    let reader = Reader::new(chain, Some(&client), cfg.no_cache);
+    let es = etherscan_client(cfg, &chain);
+    let reader = Reader::new(chain, es.as_ref(), cfg.no_cache);
     let use_json = use_json_flag || cfg.default_output == OutputFormat::Json;
 
-    let found = crate::proxy::resolve_implementation(&reader, &client, address).await?;
+    let found = crate::proxy::resolve_implementation(&reader, es.as_ref(), address).await?;
 
     // A storage-slot hit is an unambiguous single-implementation proxy.
     if let Some(f) = &found {
@@ -595,10 +563,10 @@ async fn run_facets(
     use_json_flag: bool,
     cfg: &Config,
 ) -> Result<()> {
-    let keys = cfg.require_keys()?;
     let chain = resolve_chain(chain_name)?;
-    let client = EtherscanClient::new(keys, chain.chain_id, cfg.no_cache);
-    let reader = Reader::new(chain, Some(&client), cfg.no_cache);
+    let es = etherscan_client(cfg, &chain);
+    let reader = Reader::new(chain, es.as_ref(), cfg.no_cache);
+    let fetcher = Fetcher::new(chain, &reader, es.as_ref(), cfg.no_cache);
 
     let diamond = crate::diamond::resolve_facets(&reader, address)
         .await?
@@ -617,24 +585,27 @@ async fn run_facets(
     };
 
     if let Some(dir) = save_dir {
-        return save_facet_sources(&client, &diamond, dir, flatten).await;
+        return save_facet_sources(&fetcher, &diamond, dir, flatten).await;
     }
 
     if with_abi {
-        return merge_facet_abis(&client, &diamond).await;
+        return merge_facet_abis(&fetcher, &diamond).await;
     }
 
-    // Look up each facet's verified name (cached) for a friendlier listing.
-    let mut named: Vec<(String, String, usize)> = Vec::with_capacity(diamond.facets.len());
-    for facet in &diamond.facets {
-        let name = fetch_source(&client, &facet.address)
-            .await
-            .ok()
-            .map(|s| s.contract_name)
-            .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| "(unverified)".to_string());
-        named.push((facet.address.clone(), name, facet.selectors.len()));
-    }
+    // Look up each facet's verified name for a friendlier listing.
+    let named: Vec<(String, String, usize)> = diamond
+        .facets
+        .iter()
+        .zip(fetch_facets(&fetcher, &diamond).await)
+        .map(|(facet, src)| {
+            let name = src
+                .ok()
+                .map(|s| s.fetched.name)
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| "(unverified)".to_string());
+            (facet.address.clone(), name, facet.selectors.len())
+        })
+        .collect();
 
     let use_json = use_json_flag || cfg.default_output == OutputFormat::Json;
     if use_json {
@@ -679,7 +650,7 @@ async fn run_facets(
                 "{} facets via {source_label}{}",
                 diamond.facets.len(),
                 if diamond.truncated {
-                    " (truncated: getLogs hit its 1000-record cap)"
+                    " (truncated: event logs ran past the page limit)"
                 } else {
                     ""
                 }
@@ -690,25 +661,16 @@ async fn run_facets(
     Ok(())
 }
 
-async fn merge_facet_abis(
-    client: &EtherscanClient,
-    diamond: &crate::diamond::Facets,
-) -> Result<()> {
+async fn merge_facet_abis(fetcher: &Fetcher<'_>, diamond: &crate::diamond::Facets) -> Result<()> {
     let mut merged: Vec<serde_json::Value> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut skipped = 0usize;
-    for facet in &diamond.facets {
-        let abi: String = match client
-            .call_cached(
-                None,
-                &[
-                    ("module", "contract"),
-                    ("action", "getabi"),
-                    ("address", &facet.address),
-                ],
-            )
-            .await
-        {
+    for (facet, src) in diamond
+        .facets
+        .iter()
+        .zip(fetch_facets(fetcher, diamond).await)
+    {
+        let abi = match src.and_then(|s| abi_of(&s, &facet.address)) {
             Ok(a) => a,
             Err(_) => {
                 skipped += 1;
@@ -740,37 +702,42 @@ async fn merge_facet_abis(
 /// facet gets its own subdirectory (named after the facet contract); with it,
 /// each facet is written as a single `<Name>.flat.sol`.
 async fn save_facet_sources(
-    client: &EtherscanClient,
+    fetcher: &Fetcher<'_>,
     diamond: &crate::diamond::Facets,
     dir: &Path,
     flatten: bool,
 ) -> Result<()> {
     let mut saved = 0usize;
     let mut skipped = 0usize;
-    for facet in &diamond.facets {
-        let source = match fetch_source(client, &facet.address).await {
-            Ok(s) if !s.source_code.is_empty() => s,
-            _ => {
-                eprintln!(
-                    "{}",
-                    format!("skipped {} (source not verified)", facet.address).dimmed()
-                );
+    for (facet, src) in diamond
+        .facets
+        .iter()
+        .zip(fetch_facets(fetcher, diamond).await)
+    {
+        let stored = match src {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{}", format!("skipped {} ({e})", facet.address).dimmed());
                 skipped += 1;
                 continue;
             }
         };
-        let label = if source.contract_name.is_empty() {
-            facet.address.clone()
+        let f = &stored.fetched;
+        let label = sanitize_rel_path(if f.name.is_empty() {
+            &facet.address
         } else {
-            source.contract_name.clone()
-        };
-        let files = parse_source_files(&source.source_code, &source.contract_name);
+            &f.name
+        });
         if flatten {
-            save_file(dir, &format!("{label}.flat.sol"), &flatten_files(&files))?;
+            save_file(
+                dir,
+                &format!("{label}.flat.{}", lang_ext(&f.language)),
+                &flatten_files(&f.sources),
+            )?;
         } else {
             let facet_dir = dir.join(&label);
-            for (path, content) in &files {
-                save_file(&facet_dir, path, content)?;
+            for ((_, content), rel) in f.sources.iter().zip(disk_paths(f)) {
+                save_file(&facet_dir, &rel, content)?;
             }
         }
         saved += 1;
@@ -782,7 +749,7 @@ async fn save_facet_sources(
     if skipped > 0 {
         eprintln!(
             "{}",
-            format!("note: {skipped} facet(s) had unverified source and were skipped").dimmed()
+            format!("note: {skipped} facet(s) had no verified source and were skipped").dimmed()
         );
     }
     Ok(())
@@ -791,45 +758,6 @@ async fn save_facet_sources(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_single_file_solidity() {
-        let files = parse_source_files("contract Foo {}", "Foo");
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].0, "Foo.sol");
-        assert_eq!(files[0].1, "contract Foo {}");
-    }
-
-    #[test]
-    fn parses_standard_json_input() {
-        let raw = r#"{{"language":"Solidity","sources":{"a/B.sol":{"content":"X"},"c/D.sol":{"content":"Y"}}}}"#;
-        let files = parse_source_files(raw, "B");
-        assert_eq!(files.len(), 2);
-        // sorted by path
-        assert_eq!(files[0], ("a/B.sol".to_string(), "X".to_string()));
-        assert_eq!(files[1], ("c/D.sol".to_string(), "Y".to_string()));
-    }
-
-    #[test]
-    fn parses_bare_double_brace_map() {
-        let raw = r#"{{"Only.sol":{"content":"Z"}}}"#;
-        let files = parse_source_files(raw, "Only");
-        assert_eq!(files, vec![("Only.sol".to_string(), "Z".to_string())]);
-    }
-
-    #[test]
-    fn malformed_double_brace_falls_back_to_single_file() {
-        let raw = "{{not json}}";
-        let files = parse_source_files(raw, "Fallback");
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].0, "Fallback.sol");
-    }
-
-    #[test]
-    fn empty_contract_name_uses_default() {
-        let files = parse_source_files("pragma solidity ^0.8;", "");
-        assert_eq!(files[0].0, "Contract.sol");
-    }
 
     #[test]
     fn flatten_joins_with_headers() {
@@ -855,14 +783,9 @@ mod tests {
     }
 
     #[test]
-    fn not_verified_mapping() {
-        let mapped = not_verified_if_applicable(
-            ScanevmError::ApiError("Contract source code not verified".to_string()),
-            "0xabc",
-        );
-        assert!(matches!(mapped, ScanevmError::NotVerified(_)));
-        let untouched =
-            not_verified_if_applicable(ScanevmError::ApiError("other".to_string()), "0xabc");
-        assert!(matches!(untouched, ScanevmError::ApiError(_)));
+    fn save_refuses_escaping_paths() {
+        let dir = std::env::temp_dir().join("scanevm-save-test");
+        assert!(save_file(&dir, "../x.sol", "x").is_err());
+        assert!(save_file(&dir, "/abs.sol", "x").is_err());
     }
 }
