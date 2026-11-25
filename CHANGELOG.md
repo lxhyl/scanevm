@@ -27,6 +27,10 @@ fetches contract code now, so the five contract commands have moved up a level a
 - Hints that suggest a command, for example the one for a diamond passed to
   `source --impl`, print the new form.
 
+### Fixed
+- Those hints now include the chain (`-c <chain>`), so they run as printed. They used
+  to leave out the required `-c`.
+
 ## [0.3.0]
 
 scanevm now does one thing, fetching on-chain contract code, and needs no API key: source

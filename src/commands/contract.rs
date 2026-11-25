@@ -169,6 +169,7 @@ async fn fetch_facets(fetcher: &Fetcher<'_>, diamond: &crate::diamond::Facets) -
 async fn follow_impl_of(
     reader: &Reader<'_>,
     fetcher: &Fetcher<'_>,
+    chain: &ChainInfo,
     address: &str,
     facets_hint: &str,
 ) -> Result<Option<String>> {
@@ -177,9 +178,10 @@ async fn follow_impl_of(
         eprintln!(
             "{}",
             format!(
-                "{address} is a {} with {} facets — run: scanevm facets {address} {facets_hint}",
+                "{address} is a {} with {} facets — run: scanevm facets {address} -c {} {facets_hint}",
                 r.kind.label(),
-                f.facets.len()
+                f.facets.len(),
+                chain.name
             )
             .yellow()
         );
@@ -239,7 +241,7 @@ async fn run_source(
 
     // Follow a proxy to its implementation if asked.
     if follow_impl {
-        match follow_impl_of(&reader, &fetcher, address, "--save <dir>").await? {
+        match follow_impl_of(&reader, &fetcher, &chain, address, "--save <dir>").await? {
             Some(imp) => target = imp,
             None => return Ok(()),
         }
@@ -417,7 +419,7 @@ async fn run_abi(
 
     let mut target = address.to_string();
     if follow_impl {
-        match follow_impl_of(&reader, &fetcher, address, "--abi").await? {
+        match follow_impl_of(&reader, &fetcher, &chain, address, "--abi").await? {
             Some(imp) => target = imp,
             None => return Ok(()),
         }
@@ -520,7 +522,11 @@ async fn run_impl(
     if r.is_multi_facet() {
         eprintln!(
             "{}",
-            format!("{address} has several facets — run: scanevm facets {address}").yellow()
+            format!(
+                "{address} has several facets — run: scanevm facets {address} -c {}",
+                chain.name
+            )
+            .yellow()
         );
     }
     if r.kind == Kind::None {
@@ -591,8 +597,9 @@ async fn run_facets(
         None => {
             let hint = if r.implementation.is_some() {
                 format!(
-                    "; it is a {} proxy — run: scanevm source {address} --impl",
-                    r.kind.label()
+                    "; it is a {} proxy — run: scanevm source {address} -c {} --impl",
+                    r.kind.label(),
+                    chain.name
                 )
             } else {
                 String::new()
