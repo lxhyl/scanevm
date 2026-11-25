@@ -7,7 +7,7 @@ use crate::output::{print_json, print_kv_table};
 use crate::proxy::{resolve_json, Kind, Resolution, ResolveJson};
 use crate::rpc::Reader;
 use crate::sources::lang_ext;
-use crate::util::{checksum, run_limited, sanitize_rel_path, to_hex};
+use crate::util::{checksum, keccak_hex, run_limited, sanitize_rel_path, to_hex};
 use clap::{Args, Subcommand};
 use colored::Colorize;
 use std::path::{Component, Path, PathBuf};
@@ -476,11 +476,32 @@ async fn run_bytecode(
 
     let use_json = use_json_flag || cfg.default_output == OutputFormat::Json;
     if use_json {
-        print_json(&serde_json::json!({ "address": address, "bytecode": bytecode }));
+        print_json(&CodeJson {
+            chain_id: chain.chain_id,
+            address: checksum(address),
+            codehash: (!code.is_empty()).then(|| keccak_hex(&code)),
+            size: code.len(),
+            delegation: (code.len() == 23 && code.starts_with(&[0xef, 0x01, 0x00]))
+                .then(|| checksum(&format!("0x{}", to_hex(&code[3..])))),
+            code: bytecode,
+        });
     } else {
         println!("{bytecode}");
     }
     Ok(())
+}
+
+/// `contract bytecode --json`, as the scan service's `/code` answers.
+#[derive(serde::Serialize)]
+struct CodeJson {
+    chain_id: u64,
+    address: String,
+    /// keccak-256 of the code; null for an address without code.
+    codehash: Option<String>,
+    size: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delegation: Option<String>,
+    code: String,
 }
 
 async fn run_impl(

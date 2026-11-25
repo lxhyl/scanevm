@@ -50,6 +50,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   core's kind names (`eip1967`, `eip1967-beacon`, `zeppelinos`, `safe`, `diamond`,
   `selector-router`, `implementation-call`, …). The table shows the kind, admin, beacon
   and confidence.
+- **Breaking:** `contract bytecode --json` prints `{chain_id, address, codehash, size,
+  delegation, code}` (as the scan service's `/code`) instead of `{address, bytecode}`.
 - **Breaking:** `contract facets --json` prints the core's follow report:
   `{root, resolution, implementations}`, one source report per facet.
 - Event replay for loupe-less diamonds runs only when the bytecode looks like a
