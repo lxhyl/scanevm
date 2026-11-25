@@ -11,6 +11,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `token`, `tx` and `block` are gone. scanevm now does one thing: fetch on-chain
   contract code (`contract source` / `abi` / `bytecode` / `impl` / `facets`).
   Exit code 7 ("no such block / tx") is retired with them.
+- **Breaking:** the chains `moonbeam` (1284), `holesky` (17000) and `scroll-sepolia`
+  (534351) are gone: Etherscan v2 no longer serves them and no other provider does.
+
+### Changed
+- The chain table now records, per chain, which verified-source providers to ask and
+  in what order, a Blockscout instance and Routescan network where there is one, and
+  public RPC endpoints. Seven chains are new: hyperevm, sonic, mantle, berachain,
+  monad, xlayer and plasma. `polygon`'s currency is `POL`.
+- Any numeric chain id (decimal or `0x` hex) is accepted, not only listed chains.
+- `scanevm chains` shows each chain's sources; `--json` prints
+  `{"chains": [{id, name, title, aliases, testnet, explorer, sources}]}`.
 
 ## [0.2.1]
 

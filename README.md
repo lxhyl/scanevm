@@ -204,19 +204,30 @@ A single `ETHERSCAN_API_KEY` still works and also accepts a comma-separated list
 
 ## Supported Chains
 
+23 mainnets and 8 testnets, each with its own provider order (run `scanevm chains`
+for the full table with sources and explorers):
+
 | Name | Aliases | Chain ID |
 |------|---------|----------|
 | ethereum | eth, mainnet | 1 |
-| polygon | matic | 137 |
+| polygon | matic, pol | 137 |
 | bsc | bnb, binance | 56 |
-| arbitrum | arb | 42161 |
+| arbitrum | arb, arb1, arbitrum-one | 42161 |
 | optimism | op | 10 |
 | base | — | 8453 |
-| avalanche | avax | 43114 |
+| avalanche | avax, avalanche-c | 43114 |
 | linea | — | 59144 |
 | scroll | — | 534352 |
+| zksync | zks, zksync-era | 324 |
+| hyperevm | hyper, hyperliquid, hl | 999 |
+| sonic | — | 146 |
+| mantle | — | 5000 |
+| berachain | bera | 80094 |
+| monad | — | 143 |
 
-Run `scanevm chains` for the full list including testnets.
+Also: blast, celo, gnosis, fantom, cronos, moonriver, xlayer, plasma, and the testnets
+sepolia, amoy, bsc-testnet, arbitrum-sepolia, optimism-sepolia, base-sepolia,
+linea-sepolia, blast-sepolia. Any other numeric chain id (or `0x` hex id) works too.
 
 ## License
 
