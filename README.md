@@ -5,7 +5,7 @@ EVM chains, from Sourcify, Etherscan, Blockscout and Routescan. **No API key nee
 
 ```sh
 # Fetch USDC's implementation source and save all files locally
-scanevm contract source 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 -c ethereum --impl --save ./usdc
+scanevm source 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 -c ethereum --impl --save ./usdc
 ```
 
 ## Where the source comes from
@@ -28,26 +28,26 @@ skipped and everything else works; `--json` reports what each provider answered.
 Chain state (bytecode, proxy storage slots, loupe calls) is read over the chain's public
 RPCs, with Etherscan as the fallback when a key is configured.
 
-## Contract Commands
+## Commands
 
-### `contract source` — download verified source code
+### `source` — download verified source code
 
 ```sh
 # Show contract metadata (name, compiler, EVM version, license, proxy hint, provider)
-scanevm contract source <ADDRESS> -c <CHAIN>
+scanevm source <ADDRESS> -c <CHAIN>
 
 # Print source to stdout
-scanevm contract source <ADDRESS> -c <CHAIN> --print
+scanevm source <ADDRESS> -c <CHAIN> --print
 
 # Save all source files to a directory (original layout preserved)
-scanevm contract source <ADDRESS> -c <CHAIN> --save ./output
+scanevm source <ADDRESS> -c <CHAIN> --save ./output
 
 # Flatten a multi-file contract into a single stream / file
-scanevm contract source <ADDRESS> -c <CHAIN> --flatten
-scanevm contract source <ADDRESS> -c <CHAIN> --flatten --save ./output
+scanevm source <ADDRESS> -c <CHAIN> --flatten
+scanevm source <ADDRESS> -c <CHAIN> --flatten --save ./output
 
 # Proxy? Fetch the IMPLEMENTATION's source in one step
-scanevm contract source <PROXY> -c <CHAIN> --impl --save ./impl
+scanevm source <PROXY> -c <CHAIN> --impl --save ./impl
 ```
 
 Multi-file contracts are unpacked with their original directory structure under
@@ -65,19 +65,19 @@ Files        1
 Chain        ethereum
 ```
 
-### `contract abi` — fetch ABI as pretty-printed JSON
+### `abi` — fetch ABI as pretty-printed JSON
 
 ```sh
-scanevm contract abi <ADDRESS> -c <CHAIN>
+scanevm abi <ADDRESS> -c <CHAIN>
 
 # Compact JSON for piping to jq
-scanevm contract abi <ADDRESS> -c <CHAIN> --json
+scanevm abi <ADDRESS> -c <CHAIN> --json
 
 # For a proxy, fetch the implementation's ABI (the one you can actually call)
-scanevm contract abi <PROXY> -c <CHAIN> --impl
+scanevm abi <PROXY> -c <CHAIN> --impl
 ```
 
-### `contract impl` — what runs behind a proxy
+### `impl` — what runs behind a proxy
 
 Reads the chain directly, so it works whether or not an explorer flagged the contract.
 Detection order (the same as the scan core's):
@@ -97,34 +97,34 @@ Detection order (the same as the scan core's):
 | `provider-hint` | a provider's proxy flag, when the chain can't confirm (low confidence) |
 
 ```sh
-scanevm contract impl <PROXY> -c <CHAIN>
+scanevm impl <PROXY> -c <CHAIN>
 ```
 
-For a diamond it tells you to use `contract facets` instead of returning a single
+For a diamond it tells you to use `facets` instead of returning a single
 misleading address. Event replay needs full-history logs, which public RPCs usually
 refuse: with an Etherscan key it uses Etherscan's logs API.
 
-### `contract facets` — list the facets of a diamond / multi-facet proxy
+### `facets` — list the facets of a diamond / multi-facet proxy
 
 ```sh
-scanevm contract facets <DIAMOND> -c <CHAIN>
+scanevm facets <DIAMOND> -c <CHAIN>
 
 # Download every facet's source (one subdir per facet) — the "get all the
 # implementation code" command for diamonds, since they have no single impl
-scanevm contract facets <DIAMOND> -c <CHAIN> --save ./facets
-scanevm contract facets <DIAMOND> -c <CHAIN> --save ./facets --flatten
+scanevm facets <DIAMOND> -c <CHAIN> --save ./facets
+scanevm facets <DIAMOND> -c <CHAIN> --save ./facets --flatten
 
 # Merge every facet's ABI into one combined ABI (the diamond's full interface)
-scanevm contract facets <DIAMOND> -c <CHAIN> --abi
+scanevm facets <DIAMOND> -c <CHAIN> --abi
 ```
 
 Facets are fetched four at a time. For a normal (single-implementation) proxy, use
-`contract source <ADDR> --impl` instead.
+`source <ADDR> --impl` instead.
 
-### `contract bytecode` — fetch deployed bytecode
+### `bytecode` — fetch deployed bytecode
 
 ```sh
-scanevm contract bytecode <ADDRESS> -c <CHAIN>
+scanevm bytecode <ADDRESS> -c <CHAIN>
 ```
 
 ## Other Commands
@@ -141,11 +141,11 @@ stderr). The shapes are the scan service's, so tools can read either:
 
 | Command | `--json` prints |
 |---------|-----------------|
-| `contract source` | `{target, chain_id, address, status, code, source: {meta}, attempts, error}` — `meta` has `name`, `language`, `compiler`, `provider`, `match`, `providers_tried`, `proxy_hint`, `deployment`, `license`, `files` |
-| `contract impl` | `{target, chain_id, address, status, kind, variant, confidence, implementation, beacon, admin, facets, checked_at}` |
-| `contract facets` | `{root, resolution, implementations}` — one source report per facet |
-| `contract bytecode` | `{chain_id, address, codehash, size, delegation, code}` |
-| `contract abi` | the ABI array |
+| `source` | `{target, chain_id, address, status, code, source: {meta}, attempts, error}` — `meta` has `name`, `language`, `compiler`, `provider`, `match`, `providers_tried`, `proxy_hint`, `deployment`, `license`, `files` |
+| `impl` | `{target, chain_id, address, status, kind, variant, confidence, implementation, beacon, admin, facets, checked_at}` |
+| `facets` | `{root, resolution, implementations}` — one source report per facet |
+| `bytecode` | `{chain_id, address, codehash, size, delegation, code}` |
+| `abi` | the ABI array |
 | `chains` | `{chains: [{id, name, title, aliases, testnet, explorer, sources}]}` |
 
 `status` is `cached`, `fetched`, `not_verified`, `no_code` or `error`; the source report
@@ -183,7 +183,7 @@ mutable the data is:
 To force a fully live run, pass `--no-cache` (any command) or set `SCANEVM_NO_CACHE=1`:
 
 ```sh
-scanevm contract source 0x... -c eth --no-cache   # skip cache read + write
+scanevm source 0x... -c eth --no-cache   # skip cache read + write
 ```
 
 ## Installation
