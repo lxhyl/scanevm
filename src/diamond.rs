@@ -11,10 +11,8 @@
 
 use std::collections::BTreeMap;
 
-use serde::Deserialize;
-
-use crate::client::EtherscanClient;
 use crate::error::Result;
+use crate::rpc::{from_hex, Log, Reader};
 
 /// `facets()`
 const SEL_FACETS: &str = "0x7a0ed627";
@@ -28,9 +26,6 @@ const DIAMOND_CUT_TOPIC: &str =
 /// the standard `DiamondCut`. Both args are indexed (selector, facet in topics).
 const SELECTOR_TO_FACET_TOPIC: &str =
     "0x0038aaccfeca40ea50135fcc37980765ee22033e320eaf575624561bdbbe9300";
-
-/// Etherscan `getLogs` returns at most this many records per call.
-const GETLOGS_CAP: usize = 1000;
 
 #[derive(Debug, Clone)]
 pub struct Facet {
@@ -51,15 +46,15 @@ pub enum Source {
 pub struct Facets {
     pub facets: Vec<Facet>,
     pub source: Source,
-    /// True if the result may be incomplete (e.g. getLogs hit its cap).
+    /// True if the result may be incomplete (log pages ran out).
     pub truncated: bool,
 }
 
 /// Try every mechanism in turn. Returns `None` if the address is not a diamond
 /// / no facets could be enumerated.
-pub async fn resolve_facets(client: &EtherscanClient, address: &str) -> Result<Option<Facets>> {
+pub async fn resolve_facets(reader: &Reader<'_>, address: &str) -> Result<Option<Facets>> {
     // 1. facets() — gives addresses and their selectors.
-    if let Some(data) = eth_call(client, address, SEL_FACETS).await {
+    if let Some(data) = eth_call(reader, address, SEL_FACETS).await {
         if let Some(facets) = decode_facets(&data) {
             if !facets.is_empty() {
                 return Ok(Some(Facets {
@@ -71,7 +66,7 @@ pub async fn resolve_facets(client: &EtherscanClient, address: &str) -> Result<O
         }
     }
     // 2. facetAddresses() — addresses only.
-    if let Some(data) = eth_call(client, address, SEL_FACET_ADDRESSES).await {
+    if let Some(data) = eth_call(reader, address, SEL_FACET_ADDRESSES).await {
         if let Some(addrs) = decode_address_array(&data) {
             if !addrs.is_empty() {
                 return Ok(Some(Facets {
@@ -89,20 +84,19 @@ pub async fn resolve_facets(client: &EtherscanClient, address: &str) -> Result<O
         }
     }
     // 3. Standard DiamondCut event-log replay (loupe-less EIP-2535 diamonds).
-    if let Some(f) = facets_from_diamond_cut(client, address).await {
+    if let Some(f) = facets_from_diamond_cut(reader, address).await {
         return Ok(Some(f));
     }
     // 4. Pendle-style SelectorToFacetSet event replay (custom selector routers).
-    Ok(facets_from_selector_events(client, address).await)
+    Ok(facets_from_selector_events(reader, address).await)
 }
 
 /// Reconstruct the facet set by replaying standard EIP-2535 `DiamondCut` events.
-async fn facets_from_diamond_cut(client: &EtherscanClient, address: &str) -> Option<Facets> {
-    let (mut logs, truncated) = fetch_all_logs(client, address, DIAMOND_CUT_TOPIC).await;
+async fn facets_from_diamond_cut(reader: &Reader<'_>, address: &str) -> Option<Facets> {
+    let (logs, truncated) = fetch_all_logs(reader, address, DIAMOND_CUT_TOPIC).await;
     if logs.is_empty() {
         return None;
     }
-    logs.sort_by_key(|l| (hex_to_u64(&l.block_number), hex_to_u64(&l.log_index)));
 
     // selector -> facet address (last writer wins; Remove deletes).
     let mut routes: BTreeMap<String, String> = BTreeMap::new();
@@ -132,12 +126,11 @@ async fn facets_from_diamond_cut(client: &EtherscanClient, address: &str) -> Opt
 
 /// Reconstruct the facet set for Pendle-style routers that emit
 /// `SelectorToFacetSet(bytes4 indexed selector, address indexed facet)`.
-async fn facets_from_selector_events(client: &EtherscanClient, address: &str) -> Option<Facets> {
-    let (mut logs, truncated) = fetch_all_logs(client, address, SELECTOR_TO_FACET_TOPIC).await;
+async fn facets_from_selector_events(reader: &Reader<'_>, address: &str) -> Option<Facets> {
+    let (logs, truncated) = fetch_all_logs(reader, address, SELECTOR_TO_FACET_TOPIC).await;
     if logs.is_empty() {
         return None;
     }
-    logs.sort_by_key(|l| (hex_to_u64(&l.block_number), hex_to_u64(&l.log_index)));
 
     let mut routes: BTreeMap<String, String> = BTreeMap::new();
     for log in &logs {
@@ -187,65 +180,17 @@ fn group_routes(
     })
 }
 
-/// Fetch all logs for `address` matching `topic0`, walking getLogs pages.
-async fn fetch_all_logs(
-    client: &EtherscanClient,
-    address: &str,
-    topic0: &str,
-) -> (Vec<LogEntry>, bool) {
-    // Walk pages until a short one. Bounded so a pathological contract can't loop forever.
-    const MAX_PAGES: u32 = 20;
-    let mut all: Vec<LogEntry> = Vec::new();
-    let mut truncated = false;
-    for page in 1..=MAX_PAGES {
-        let page_str = page.to_string();
-        let offset_str = GETLOGS_CAP.to_string();
-        let logs: Vec<LogEntry> = client
-            .call(&[
-                ("module", "logs"),
-                ("action", "getLogs"),
-                ("address", address),
-                ("fromBlock", "0"),
-                ("toBlock", "latest"),
-                ("topic0", topic0),
-                ("page", &page_str),
-                ("offset", &offset_str),
-            ])
-            .await
-            .unwrap_or_default();
-        let n = logs.len();
-        all.extend(logs);
-        if n < GETLOGS_CAP {
-            break;
-        }
-        if page == MAX_PAGES {
-            truncated = true;
-        }
+/// All logs for `address` matching `topic0`, oldest first, and whether the
+/// list may be cut short. A failed read counts as no logs (not a diamond).
+async fn fetch_all_logs(reader: &Reader<'_>, address: &str, topic0: &str) -> (Vec<Log>, bool) {
+    match reader.logs(address, topic0).await {
+        Ok(l) => (l.logs, l.truncated),
+        Err(_) => (Vec::new(), false),
     }
-    (all, truncated)
 }
 
-#[derive(Debug, Deserialize, Default)]
-struct LogEntry {
-    #[serde(default)]
-    data: String,
-    #[serde(default)]
-    topics: Vec<String>,
-    #[serde(rename = "blockNumber", default)]
-    block_number: String,
-    #[serde(rename = "logIndex", default)]
-    log_index: String,
-}
-
-async fn eth_call(client: &EtherscanClient, to: &str, data: &str) -> Option<Vec<u8>> {
-    let raw: String = client
-        .proxy(
-            "eth_call",
-            &format!(r#"{{"to":"{to}","data":"{data}","tag":"latest"}}"#),
-        )
-        .await
-        .ok()?;
-    from_hex(&raw)
+async fn eth_call(reader: &Reader<'_>, to: &str, data: &str) -> Option<Vec<u8>> {
+    reader.call(to, data).await.ok()
 }
 
 // ---- minimal ABI decoding (no external crate) ----
@@ -329,41 +274,12 @@ fn decode_selectors(data: &[u8], at: usize) -> Option<Vec<String>> {
         .collect()
 }
 
-fn from_hex(s: &str) -> Option<Vec<u8>> {
-    let s = s.trim().strip_prefix("0x").unwrap_or(s.trim());
-    if !s.len().is_multiple_of(2) {
-        return None;
-    }
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(s.len() / 2);
-    let mut i = 0;
-    while i < bytes.len() {
-        out.push((hex_nibble(bytes[i])? << 4) | hex_nibble(bytes[i + 1])?);
-        i += 2;
-    }
-    Some(out)
-}
-
-fn hex_nibble(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
-}
-
 fn to_hex(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {
         s.push_str(&format!("{b:02x}"));
     }
     s
-}
-
-fn hex_to_u64(s: &str) -> u64 {
-    let s = s.trim().strip_prefix("0x").unwrap_or(s.trim());
-    u64::from_str_radix(s, 16).unwrap_or(0)
 }
 
 #[cfg(test)]

@@ -7,10 +7,9 @@
 //!
 //! Slot constants are `keccak256(...)`-derived and match the EIP specs.
 
-use std::time::Duration;
-
 use crate::client::EtherscanClient;
 use crate::error::Result;
+use crate::rpc::Reader;
 use crate::types::ContractSource;
 
 /// keccak256("eip1967.proxy.implementation") - 1
@@ -25,9 +24,6 @@ const ZEPPELINOS_IMPL: &str = "0x7050c9e0f4ca769c69bd3a8ef740bc37934f8e2c036e5a7
 /// `implementation()` selector — called on an EIP-1967 beacon.
 const IMPLEMENTATION_SELECTOR: &str = "0x5c60da1b";
 
-/// Implementations can be upgraded, so cache slot reads only briefly.
-const SLOT_TTL: Duration = Duration::from_secs(60);
-
 pub struct Implementation {
     pub address: String,
     /// Which mechanism revealed the implementation (for display).
@@ -37,26 +33,27 @@ pub struct Implementation {
 /// Try every known proxy mechanism in turn; return the first implementation
 /// found, or `None` if the address does not look like a proxy.
 pub async fn resolve_implementation(
+    reader: &Reader<'_>,
     client: &EtherscanClient,
     address: &str,
 ) -> Result<Option<Implementation>> {
     // 1. EIP-1967 implementation slot (the common case).
-    if let Some(address) = read_slot_address(client, address, EIP1967_IMPL).await {
+    if let Some(address) = read_slot_address(reader, address, EIP1967_IMPL).await {
         return Ok(Some(Implementation {
             address,
             via: "EIP-1967",
         }));
     }
     // 2. EIP-1822 (UUPS) PROXIABLE slot.
-    if let Some(address) = read_slot_address(client, address, EIP1822_PROXIABLE).await {
+    if let Some(address) = read_slot_address(reader, address, EIP1822_PROXIABLE).await {
         return Ok(Some(Implementation {
             address,
             via: "EIP-1822 (UUPS)",
         }));
     }
     // 3. EIP-1967 beacon slot -> call implementation() on the beacon.
-    if let Some(beacon) = read_slot_address(client, address, EIP1967_BEACON).await {
-        if let Some(address) = call_implementation(client, &beacon).await {
+    if let Some(beacon) = read_slot_address(reader, address, EIP1967_BEACON).await {
+        if let Some(address) = call_implementation(reader, &beacon).await {
             return Ok(Some(Implementation {
                 address,
                 via: "EIP-1967 beacon",
@@ -64,7 +61,7 @@ pub async fn resolve_implementation(
         }
     }
     // 4. Legacy zeppelinos slot (old proxies).
-    if let Some(address) = read_slot_address(client, address, ZEPPELINOS_IMPL).await {
+    if let Some(address) = read_slot_address(reader, address, ZEPPELINOS_IMPL).await {
         return Ok(Some(Implementation {
             address,
             via: "zeppelinos (legacy)",
@@ -94,27 +91,18 @@ pub async fn resolve_implementation(
     Ok(None)
 }
 
-async fn read_slot_address(client: &EtherscanClient, address: &str, slot: &str) -> Option<String> {
-    let raw: String = client
-        .proxy_cached(
-            Some(SLOT_TTL),
-            "eth_getStorageAt",
-            &format!(r#"{{"address":"{address}","position":"{slot}","tag":"latest"}}"#),
-        )
-        .await
-        .ok()?;
+async fn read_slot_address(reader: &Reader<'_>, address: &str, slot: &str) -> Option<String> {
+    let raw = reader.storage(address, slot).await.ok()?;
     word_to_address(&raw)
 }
 
-async fn call_implementation(client: &EtherscanClient, beacon: &str) -> Option<String> {
-    let raw: String = client
-        .proxy(
-            "eth_call",
-            &format!(r#"{{"to":"{beacon}","data":"{IMPLEMENTATION_SELECTOR}","tag":"latest"}}"#),
-        )
-        .await
-        .ok()?;
-    word_to_address(&raw)
+async fn call_implementation(reader: &Reader<'_>, beacon: &str) -> Option<String> {
+    let raw = reader.call(beacon, IMPLEMENTATION_SELECTOR).await.ok()?;
+    word_to_address(&format!("0x{}", to_hex(&raw)))
+}
+
+fn to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Extract the address (the low 20 bytes) from a 32-byte storage word, or

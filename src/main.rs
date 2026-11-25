@@ -7,6 +7,7 @@ mod diamond;
 mod error;
 mod output;
 mod proxy;
+mod rpc;
 mod types;
 
 use clap::{Parser, Subcommand};

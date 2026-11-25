@@ -22,6 +22,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Any numeric chain id (decimal or `0x` hex) is accepted, not only listed chains.
 - `scanevm chains` shows each chain's sources; `--json` prints
   `{"chains": [{id, name, title, aliases, testnet, explorer, sources}]}`.
+- Proxy / diamond detection and `contract bytecode` read chain state over the
+  chain's public RPCs first, falling back to Etherscan's proxy module when they all
+  fail. Event logs (diamond replay) still come from Etherscan's logs API first, with a
+  full-range `eth_getLogs` as the fallback. This spares the Etherscan rate limit and
+  works on chains Etherscan no longer serves.
 
 ## [0.2.1]
 

@@ -3,6 +3,7 @@ use crate::client::EtherscanClient;
 use crate::config::{Config, OutputFormat};
 use crate::error::{Result, ScanevmError};
 use crate::output::{print_json, print_kv_table};
+use crate::rpc::Reader;
 use crate::types::ContractSource;
 use clap::{Args, Subcommand};
 use colored::Colorize;
@@ -183,13 +184,14 @@ async fn run_source(
     let keys = cfg.require_keys()?;
     let chain = resolve_chain(chain_name)?;
     let client = EtherscanClient::new(keys, chain.chain_id, cfg.no_cache);
+    let reader = Reader::new(chain, Some(&client), cfg.no_cache);
 
     let mut source = fetch_source(&client, address).await?;
     let mut display_address = address.to_string();
 
     // Follow a proxy to its implementation if asked.
     if follow_impl {
-        let found = crate::proxy::resolve_implementation(&client, address).await?;
+        let found = crate::proxy::resolve_implementation(&reader, &client, address).await?;
         // A storage-slot hit is an unambiguous single-implementation proxy.
         let slot_impl = found
             .as_ref()
@@ -201,7 +203,7 @@ async fn run_source(
             None => {
                 // Etherscan-flagged or unknown — a diamond would have many facets,
                 // so following a single "implementation" would be misleading.
-                if let Some(d) = crate::diamond::resolve_facets(&client, address).await? {
+                if let Some(d) = crate::diamond::resolve_facets(&reader, address).await? {
                     eprintln!(
                         "{}",
                         format!(
@@ -413,10 +415,11 @@ async fn run_abi(
     let keys = cfg.require_keys()?;
     let chain = resolve_chain(chain_name)?;
     let client = EtherscanClient::new(keys, chain.chain_id, cfg.no_cache);
+    let reader = Reader::new(chain, Some(&client), cfg.no_cache);
 
     let mut target = address.to_string();
     if follow_impl {
-        match crate::proxy::resolve_implementation(&client, address).await? {
+        match crate::proxy::resolve_implementation(&reader, &client, address).await? {
             Some(found) => {
                 eprintln!(
                     "{}",
@@ -491,15 +494,14 @@ async fn run_bytecode(
     let keys = cfg.require_keys()?;
     let chain = resolve_chain(chain_name)?;
     let client = EtherscanClient::new(keys, chain.chain_id, cfg.no_cache);
+    let reader = Reader::new(chain, Some(&client), cfg.no_cache);
 
-    // Deployed bytecode at a given address is immutable; cache permanently.
-    let bytecode: String = client
-        .proxy_cached(
-            None,
-            "eth_getCode",
-            &format!(r#"{{"address":"{address}","tag":"latest"}}"#),
-        )
-        .await?;
+    // Deployed bytecode is immutable; the reader caches it for good.
+    let code = reader.code(address).await?;
+    let bytecode = format!(
+        "0x{}",
+        code.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    );
 
     let use_json = use_json_flag || cfg.default_output == OutputFormat::Json;
     if use_json {
@@ -519,9 +521,10 @@ async fn run_impl(
     let keys = cfg.require_keys()?;
     let chain = resolve_chain(chain_name)?;
     let client = EtherscanClient::new(keys, chain.chain_id, cfg.no_cache);
+    let reader = Reader::new(chain, Some(&client), cfg.no_cache);
     let use_json = use_json_flag || cfg.default_output == OutputFormat::Json;
 
-    let found = crate::proxy::resolve_implementation(&client, address).await?;
+    let found = crate::proxy::resolve_implementation(&reader, &client, address).await?;
 
     // A storage-slot hit is an unambiguous single-implementation proxy.
     if let Some(f) = &found {
@@ -531,7 +534,7 @@ async fn run_impl(
     }
 
     // Otherwise it might be a diamond — a single "implementation" would mislead.
-    if let Some(d) = crate::diamond::resolve_facets(&client, address).await? {
+    if let Some(d) = crate::diamond::resolve_facets(&reader, address).await? {
         let n = d.facets.len();
         eprintln!(
             "{}",
@@ -595,8 +598,9 @@ async fn run_facets(
     let keys = cfg.require_keys()?;
     let chain = resolve_chain(chain_name)?;
     let client = EtherscanClient::new(keys, chain.chain_id, cfg.no_cache);
+    let reader = Reader::new(chain, Some(&client), cfg.no_cache);
 
-    let diamond = crate::diamond::resolve_facets(&client, address)
+    let diamond = crate::diamond::resolve_facets(&reader, address)
         .await?
         .ok_or_else(|| {
             ScanevmError::ApiError(format!(

@@ -144,26 +144,6 @@ impl EtherscanClient {
         Ok(serde_json::from_value(value)?)
     }
 
-    /// Cached variant of [`proxy`](Self::proxy).
-    pub async fn proxy_cached<T: DeserializeOwned + Serialize>(
-        &self,
-        ttl: Option<Duration>,
-        method: &str,
-        json_params: &str,
-    ) -> Result<T> {
-        let key = proxy_key(self.chain_id, method, json_params);
-        if let Some(raw) = self.cache.get(&key) {
-            if let Ok(value) = serde_json::from_str::<T>(&raw) {
-                return Ok(value);
-            }
-        }
-        let value: T = self.proxy(method, json_params).await?;
-        if let Ok(serialized) = serde_json::to_string(&value) {
-            self.cache.put(&key, &serialized, ttl);
-        }
-        Ok(value)
-    }
-
     async fn proxy_value(&self, method: &str, json_params: &str) -> Result<serde_json::Value> {
         let body = self.send(&self.proxy_query(method, json_params)).await?;
         parse_proxy(&body)
@@ -414,10 +394,6 @@ fn call_key(chain_id: u64, params: &[(&str, &str)]) -> String {
         .collect();
     parts.sort();
     format!("call|{chain_id}|{}", parts.join("&"))
-}
-
-fn proxy_key(chain_id: u64, method: &str, json_params: &str) -> String {
-    format!("proxy|{chain_id}|{method}|{json_params}")
 }
 
 #[cfg(test)]
