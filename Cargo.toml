@@ -2,7 +2,7 @@
 name = "scanevm"
 version = "0.2.1"
 edition = "2021"
-description = "A fast CLI for fetching verified smart contract source code and querying blockchain data across EVM chains."
+description = "A fast CLI for fetching verified smart contract source code, ABIs and bytecode across EVM chains."
 license = "MIT"
 repository = "https://github.com/lxhyl/scanevm"
 homepage = "https://github.com/lxhyl/scanevm"

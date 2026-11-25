@@ -1,6 +1,6 @@
 # scanevm
 
-A fast CLI for fetching verified smart contract source code — and querying blockchain data — across multiple chains.
+A fast CLI for fetching verified smart contract source code, ABIs and bytecode across EVM chains.
 
 ```sh
 # Fetch USDC source code and save all files locally
@@ -98,14 +98,8 @@ scanevm contract bytecode <ADDRESS> -c <CHAIN>
 ## Other Commands
 
 ```
-scanevm balance <ADDRESS> -c <CHAIN>       ETH balance
-scanevm txlist  <ADDRESS> -c <CHAIN>       Recent transactions
-scanevm transfers <ADDRESS> -c <CHAIN>     ERC-20 / NFT transfers
-scanevm gas -c <CHAIN>                     Current gas prices
-scanevm token <CONTRACT> -c <CHAIN>        ERC-20 token info
-scanevm tx <TX_HASH> -c <CHAIN>            Transaction details
-scanevm block <NUMBER> -c <CHAIN>          Block details
 scanevm chains                             List supported chains
+scanevm config ...                         API keys and defaults
 ```
 
 Add `--json` to any command for machine-readable output.
@@ -124,7 +118,6 @@ agents can branch — e.g. retry on `4` but give up on `2`:
 | 4 | rate limited (retryable) |
 | 5 | invalid API key |
 | 6 | API error |
-| 7 | not found (no such block / tx) |
 | 8 | contract source not verified |
 
 Environment variables: `ETHERSCAN_API_KEYS` / `ETHERSCAN_API_KEY` (a key or
@@ -139,11 +132,9 @@ how mutable the data is:
 
 | Data | Cached |
 |------|--------|
-| Verified **non-proxy** source / ABI / bytecode, mined blocks, confirmed txs | permanently (immutable) |
+| Verified **non-proxy** source / ABI / bytecode | permanently (immutable) |
 | **Proxy / upgradeable** contract source | **never — always fetched fresh** so the current implementation shows |
 | Proxy → implementation resolution | 60s |
-| Balances, token supply | seconds |
-| Gas, tx lists, transfers | not cached (always live) |
 
 So an upgradeable contract always reflects its latest implementation, while
 immutable data is served instantly from cache. To force a fully live run, pass

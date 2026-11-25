@@ -26,9 +26,6 @@ pub enum ScanevmError {
     })]
     RateLimited { retry_after: Option<u64> },
 
-    #[error("Not found: {0}")]
-    NotFound(String),
-
     #[error("Contract source code is not verified for {0}")]
     NotVerified(String),
 
@@ -58,7 +55,6 @@ impl ScanevmError {
     /// | 4    | rate limited (retryable)                              |
     /// | 5    | invalid API key (auth)                                |
     /// | 6    | other upstream API error                              |
-    /// | 7    | not found (no such block / tx)                        |
     /// | 8    | contract source not verified                          |
     /// | 9    | local I/O error                                       |
     /// | 70   | internal data/decoding error                          |
@@ -70,7 +66,6 @@ impl ScanevmError {
             RateLimited { .. } => 4,
             InvalidApiKey => 5,
             ApiError(_) => 6,
-            NotFound(_) => 7,
             NotVerified(_) => 8,
             Io(_) => 9,
             Json(_) => 70,
@@ -114,7 +109,6 @@ mod tests {
         );
         assert_eq!(ScanevmError::InvalidApiKey.exit_code(), 5);
         assert_eq!(ScanevmError::ApiError("x".into()).exit_code(), 6);
-        assert_eq!(ScanevmError::NotFound("x".into()).exit_code(), 7);
         assert_eq!(ScanevmError::NotVerified("x".into()).exit_code(), 8);
     }
 

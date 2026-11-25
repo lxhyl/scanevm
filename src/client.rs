@@ -164,17 +164,6 @@ impl EtherscanClient {
         Ok(value)
     }
 
-    /// Read a manually-keyed cache entry (for callers that compose several
-    /// requests into one cached payload, e.g. `tx`).
-    pub fn cache_get(&self, parts: &[&str]) -> Option<String> {
-        self.cache.get(&manual_key(self.chain_id, parts))
-    }
-
-    /// Write a manually-keyed cache entry. `None` TTL caches permanently.
-    pub fn cache_put(&self, parts: &[&str], data: &str, ttl: Option<Duration>) {
-        self.cache.put(&manual_key(self.chain_id, parts), data, ttl);
-    }
-
     async fn proxy_value(&self, method: &str, json_params: &str) -> Result<serde_json::Value> {
         let body = self.send(&self.proxy_query(method, json_params)).await?;
         parse_proxy(&body)
@@ -429,10 +418,6 @@ fn call_key(chain_id: u64, params: &[(&str, &str)]) -> String {
 
 fn proxy_key(chain_id: u64, method: &str, json_params: &str) -> String {
     format!("proxy|{chain_id}|{method}|{json_params}")
-}
-
-fn manual_key(chain_id: u64, parts: &[&str]) -> String {
-    format!("manual|{chain_id}|{}", parts.join("|"))
 }
 
 #[cfg(test)]

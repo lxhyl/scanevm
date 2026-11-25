@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+- **Breaking:** the chain-data commands `balance`, `txlist`, `transfers`, `gas`,
+  `token`, `tx` and `block` are gone. scanevm now does one thing: fetch on-chain
+  contract code (`contract source` / `abi` / `bytecode` / `impl` / `facets`).
+  Exit code 7 ("no such block / tx") is retired with them.
+
 ## [0.2.1]
 
 ### Added

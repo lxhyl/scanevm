@@ -14,16 +14,12 @@ use colored::Colorize;
 use config::Config;
 use error::Result;
 
-use commands::{
-    balance::BalanceArgs, block::BlockArgs, chains::ChainsArgs, config::ConfigArgs,
-    contract::ContractArgs, gas::GasArgs, token::TokenArgs, transfers::TransfersArgs, tx::TxArgs,
-    txlist::TxlistArgs,
-};
+use commands::{chains::ChainsArgs, config::ConfigArgs, contract::ContractArgs};
 
 #[derive(Debug, Parser)]
 #[command(
     name = "scanevm",
-    about = "scanevm — fetch verified contract source and query EVM chains from the terminal",
+    about = "scanevm — fetch verified contract source, ABI and bytecode across EVM chains",
     version,
     after_help = EXIT_CODES_HELP
 )]
@@ -47,7 +43,6 @@ Exit codes:
   4  rate limited (retryable)
   5  invalid API key
   6  API error
-  7  not found (no such block / tx)
   8  contract source not verified
 
 Most commands accept --json. Configure multiple API keys (config set-key K1 K2 ...)
@@ -58,22 +53,8 @@ Env: ETHERSCAN_API_KEYS (comma-separated pool), ETHERSCAN_API_KEY, SCANEVM_NO_CA
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Get ETH balance for an address
-    Balance(BalanceArgs),
-    /// List transactions for an address
-    Txlist(TxlistArgs),
-    /// List ERC-20 / NFT token transfers
-    Transfers(TransfersArgs),
     /// Contract source, ABI, bytecode, and proxy resolution
     Contract(ContractArgs),
-    /// Current gas prices
-    Gas(GasArgs),
-    /// ERC-20 token information
-    Token(TokenArgs),
-    /// Transaction details by hash
-    Tx(TxArgs),
-    /// Block details by number
-    Block(BlockArgs),
     /// List supported chains
     Chains(ChainsArgs),
     /// Configure API key and defaults
@@ -93,14 +74,7 @@ async fn main() {
 
 async fn run(command: Commands, cfg: &Config) -> Result<()> {
     match command {
-        Commands::Balance(args) => commands::balance::run(&args, cfg).await,
-        Commands::Txlist(args) => commands::txlist::run(&args, cfg).await,
-        Commands::Transfers(args) => commands::transfers::run(&args, cfg).await,
         Commands::Contract(args) => commands::contract::run(&args, cfg).await,
-        Commands::Gas(args) => commands::gas::run(&args, cfg).await,
-        Commands::Token(args) => commands::token::run(&args, cfg).await,
-        Commands::Tx(args) => commands::tx::run(&args, cfg).await,
-        Commands::Block(args) => commands::block::run(&args, cfg).await,
         Commands::Chains(args) => commands::chains::run(&args, cfg).await,
         Commands::Config(args) => commands::config::run(&args, cfg).await,
     }
