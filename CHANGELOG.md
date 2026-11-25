@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1]
+
+**This patch release breaks scripts that call `scanevm contract …`.** scanevm only
+fetches contract code now, so the five contract commands have moved up a level and the
+`contract` command is gone.
+
+### Changed
+- **Breaking:** `source`, `abi`, `bytecode`, `impl` and `facets` are now top-level
+  commands. Arguments, flags and `--json` output are unchanged. Drop the word `contract`:
+
+  | 0.3.0 | 0.3.1 |
+  |-------|-------|
+  | `scanevm contract source <ADDR> -c <CHAIN>` | `scanevm source <ADDR> -c <CHAIN>` |
+  | `scanevm contract abi …` | `scanevm abi …` |
+  | `scanevm contract bytecode …` | `scanevm bytecode …` |
+  | `scanevm contract impl …` | `scanevm impl …` |
+  | `scanevm contract facets …` | `scanevm facets …` |
+
+  There is no alias for the old form. `scanevm contract …` now fails with
+  "unrecognized subcommand 'contract'" (exit code 2).
+- Hints that suggest a command, for example the one for a diamond passed to
+  `source --impl`, print the new form.
+
 ## [0.3.0]
 
 scanevm now does one thing, fetching on-chain contract code, and needs no API key: source
