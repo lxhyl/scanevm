@@ -8,18 +8,13 @@ use crate::proxy::{resolve_json, Kind, Resolution, ResolveJson};
 use crate::rpc::Reader;
 use crate::sources::lang_ext;
 use crate::util::{checksum, keccak_hex, run_limited, sanitize_rel_path, to_hex};
-use clap::{Args, Subcommand};
+use clap::Subcommand;
 use colored::Colorize;
 use std::path::{Component, Path, PathBuf};
 
-#[derive(Debug, Args)]
-pub struct ContractArgs {
-    #[command(subcommand)]
-    pub subcommand: ContractSubcommand,
-}
-
+/// The contract-code commands, at the top level of the CLI.
 #[derive(Debug, Subcommand)]
-pub enum ContractSubcommand {
+pub enum ContractCommand {
     /// Fetch and display verified contract source code
     Source {
         /// Contract address
@@ -106,9 +101,9 @@ pub enum ContractSubcommand {
     },
 }
 
-pub async fn run(args: &ContractArgs, cfg: &Config) -> Result<()> {
-    match &args.subcommand {
-        ContractSubcommand::Source {
+pub async fn run(command: &ContractCommand, cfg: &Config) -> Result<()> {
+    match command {
+        ContractCommand::Source {
             address,
             chain,
             print,
@@ -129,23 +124,23 @@ pub async fn run(args: &ContractArgs, cfg: &Config) -> Result<()> {
             )
             .await
         }
-        ContractSubcommand::Abi {
+        ContractCommand::Abi {
             address,
             chain,
             follow_impl,
             json,
         } => run_abi(address, chain, *follow_impl, *json, cfg).await,
-        ContractSubcommand::Bytecode {
+        ContractCommand::Bytecode {
             address,
             chain,
             json,
         } => run_bytecode(address, chain, *json, cfg).await,
-        ContractSubcommand::Impl {
+        ContractCommand::Impl {
             address,
             chain,
             json,
         } => run_impl(address, chain, *json, cfg).await,
-        ContractSubcommand::Facets {
+        ContractCommand::Facets {
             address,
             chain,
             save,
@@ -170,7 +165,7 @@ async fn fetch_facets(fetcher: &Fetcher<'_>, diamond: &crate::diamond::Facets) -
 
 /// Follow a proxy to its single implementation. A diamond has many facets, so
 /// following one "implementation" would mislead: `Ok(None)` after telling the
-/// user to use `contract facets`.
+/// user to use `facets`.
 async fn follow_impl_of(
     reader: &Reader<'_>,
     fetcher: &Fetcher<'_>,
@@ -182,7 +177,7 @@ async fn follow_impl_of(
         eprintln!(
             "{}",
             format!(
-                "{address} is a {} with {} facets — run: scanevm contract facets {address} {facets_hint}",
+                "{address} is a {} with {} facets — run: scanevm facets {address} {facets_hint}",
                 r.kind.label(),
                 f.facets.len()
             )
@@ -491,7 +486,7 @@ async fn run_bytecode(
     Ok(())
 }
 
-/// `contract bytecode --json`, as the scan service's `/code` answers.
+/// `bytecode --json`, as the scan service's `/code` answers.
 #[derive(serde::Serialize)]
 struct CodeJson {
     chain_id: u64,
@@ -525,8 +520,7 @@ async fn run_impl(
     if r.is_multi_facet() {
         eprintln!(
             "{}",
-            format!("{address} has several facets — run: scanevm contract facets {address}")
-                .yellow()
+            format!("{address} has several facets — run: scanevm facets {address}").yellow()
         );
     }
     if r.kind == Kind::None {
@@ -568,7 +562,7 @@ fn print_resolution(address: &str, r: &Resolution, chain: &ChainInfo) {
     print_kv_table(&rows);
 }
 
-/// `contract facets --json`: the scan core's follow report.
+/// `facets --json`: the scan core's follow report.
 #[derive(serde::Serialize)]
 struct FollowJson<'a> {
     root: ReportJson<'a>,
@@ -597,7 +591,7 @@ async fn run_facets(
         None => {
             let hint = if r.implementation.is_some() {
                 format!(
-                    "; it is a {} proxy — run: scanevm contract source {address} --impl",
+                    "; it is a {} proxy — run: scanevm source {address} --impl",
                     r.kind.label()
                 )
             } else {

@@ -17,7 +17,7 @@ use colored::Colorize;
 use config::Config;
 use error::Result;
 
-use commands::{chains::ChainsArgs, config::ConfigArgs, contract::ContractArgs};
+use commands::{chains::ChainsArgs, config::ConfigArgs, contract::ContractCommand};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -58,8 +58,8 @@ Env: ETHERSCAN_API_KEYS (comma-separated pool), ETHERSCAN_API_KEY, SCANEVM_NO_CA
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Contract source, ABI, bytecode, and proxy resolution
-    Contract(ContractArgs),
+    #[command(flatten)]
+    Contract(ContractCommand),
     /// List supported chains
     Chains(ChainsArgs),
     /// Configure the optional Etherscan API key(s) and defaults
@@ -79,7 +79,7 @@ async fn main() {
 
 async fn run(command: Commands, cfg: &Config) -> Result<()> {
     match command {
-        Commands::Contract(args) => commands::contract::run(&args, cfg).await,
+        Commands::Contract(cmd) => commands::contract::run(&cmd, cfg).await,
         Commands::Chains(args) => commands::chains::run(&args, cfg).await,
         Commands::Config(args) => commands::config::run(&args, cfg).await,
     }
